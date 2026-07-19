@@ -30,6 +30,73 @@ from utils.logger import DebugFrameSaver, log_error, log_info
 from vision.track_detector import ORIENTED_RECT_API, TrackDetector
 
 
+# =============================================================================
+# 现场调参区
+# =============================================================================
+# CanMV IDE 在线运行时通常只方便修改当前打开的 main.py。为了避免每次调整
+# 黄色阈值都重新上传 config.py，这里的值会在程序启动时临时覆盖 config.py。
+#
+# 调试完成后，请把最终稳定值回填到 config.py，并将 FIELD_TUNING_ENABLED
+# 改成 False。这样 Git 仓库中的长期配置仍然只有一个正式来源。
+FIELD_TUNING_ENABLED = True
+
+# 黄色 RGB 阈值：[R_min, R_max, G_min, G_max, B_min, B_max]
+TUNE_TRACK_RGB_THRESHOLD = [130, 255, 90, 255, 0, 150]
+
+# 连通区域和软件 ROI
+TUNE_TRACK_MIN_AREA = 1200
+TUNE_TRACK_KERNEL_SIZE = 1
+TUNE_TRACK_ROI = (0, 0, 640, 480)
+TUNE_TRACK_MIN_BBOX_ASPECT_RATIO = 2.5
+
+# 旋转矩形。排查黄色 Blob 时可先把 USE_ORIENTED_RECT 改成 False。
+TUNE_TRACK_USE_ORIENTED_RECT = True
+TUNE_TRACK_ALLOW_BBOX_FALLBACK = True
+TUNE_TRACK_RECT_CANNY_LOW = 50
+TUNE_TRACK_RECT_CANNY_HIGH = 150
+TUNE_TRACK_RECT_APPROX_EPSILON = 0.04
+TUNE_TRACK_RECT_MIN_AREA_RATIO = 0.001
+TUNE_TRACK_RECT_MAX_ANGLE_COS = 0.5
+TUNE_TRACK_RECT_GAUSSIAN_SIZE = 5
+TUNE_TRACK_RECT_MIN_OVERLAP = 0.20
+TUNE_TRACK_RECT_MIN_ASPECT_RATIO = 2.5
+
+
+def _apply_field_tuning():
+    """用 main.py 顶部的现场值临时覆盖 config.py，不修改算法模块。"""
+    if not FIELD_TUNING_ENABLED:
+        print("field_tuning=OFF, use config.py")
+        return
+
+    config.TRACK_RGB_THRESHOLD = list(TUNE_TRACK_RGB_THRESHOLD)
+    config.TRACK_MIN_AREA = int(TUNE_TRACK_MIN_AREA)
+    config.TRACK_KERNEL_SIZE = int(TUNE_TRACK_KERNEL_SIZE)
+    config.TRACK_ROI = tuple(TUNE_TRACK_ROI)
+    config.TRACK_MIN_BBOX_ASPECT_RATIO = float(TUNE_TRACK_MIN_BBOX_ASPECT_RATIO)
+
+    config.TRACK_USE_ORIENTED_RECT = bool(TUNE_TRACK_USE_ORIENTED_RECT)
+    config.TRACK_ALLOW_BBOX_FALLBACK = bool(TUNE_TRACK_ALLOW_BBOX_FALLBACK)
+    config.TRACK_RECT_CANNY_LOW = int(TUNE_TRACK_RECT_CANNY_LOW)
+    config.TRACK_RECT_CANNY_HIGH = int(TUNE_TRACK_RECT_CANNY_HIGH)
+    config.TRACK_RECT_APPROX_EPSILON = float(TUNE_TRACK_RECT_APPROX_EPSILON)
+    config.TRACK_RECT_MIN_AREA_RATIO = float(TUNE_TRACK_RECT_MIN_AREA_RATIO)
+    config.TRACK_RECT_MAX_ANGLE_COS = float(TUNE_TRACK_RECT_MAX_ANGLE_COS)
+    config.TRACK_RECT_GAUSSIAN_SIZE = int(TUNE_TRACK_RECT_GAUSSIAN_SIZE)
+    config.TRACK_RECT_MIN_OVERLAP = float(TUNE_TRACK_RECT_MIN_OVERLAP)
+    config.TRACK_RECT_MIN_ASPECT_RATIO = float(TUNE_TRACK_RECT_MIN_ASPECT_RATIO)
+
+    print("field_tuning=ON")
+    print("tune_threshold={}".format(config.TRACK_RGB_THRESHOLD))
+    print("tune_roi={}".format(config.TRACK_ROI))
+    print(
+        "tune_min_area={} kernel={} oriented_rect={}".format(
+            config.TRACK_MIN_AREA,
+            config.TRACK_KERNEL_SIZE,
+            config.TRACK_USE_ORIENTED_RECT,
+        )
+    )
+
+
 def _display_type():
     """把 config.py 中的字符串转换成 Display.ST7701 等真实常量。"""
     if not hasattr(Display, config.DISPLAY_TYPE):
@@ -188,6 +255,8 @@ def run():
     media_initialized = False
     display_initialized = False
 
+    # 必须在创建 TrackDetector 前覆盖配置，因为检测器会在构造时复制参数。
+    _apply_field_tuning()
     detector = _create_detector()
     capabilities = detector.capability_report()
     if not capabilities["rgb888_find_blobs"]:

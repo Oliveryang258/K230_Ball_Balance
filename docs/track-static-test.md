@@ -105,6 +105,20 @@ LCD 标记含义：
 
 ## 5. 黄色阈值怎么调
 
+### CanMV IDE 只改 `main.py` 的现场调参方式
+
+`src/main.py` 顶部提供了 `FIELD_TUNING_ENABLED` 和一组 `TUNE_TRACK_*`
+参数。启用时，程序会在创建检测器之前用这些值临时覆盖 `config.py`，因此现场
+反复调参只需修改并重新运行 `main.py`，不必反复上传其他模块。
+
+参数稳定后，应把最终值回填到 `src/config.py`，并设置：
+
+```python
+FIELD_TUNING_ENABLED = False
+```
+
+这样长期配置仍由 `config.py` 统一管理。
+
 初始值位于 `src/config.py`：
 
 ```python
@@ -156,4 +170,3 @@ TRACK_ROI = (20, 100, 600, 280)
 ## 8. 测试结束后记录
 
 至少记录：固件版本、启动能力信息、阈值、ROI、光照、LCD 是否正常、`angle_source`、FPS、异常全文，并填入 `docs/verified-api-notes.md` 的模板。只有实机成功后才能把 API 状态改成“已验证”。
-
