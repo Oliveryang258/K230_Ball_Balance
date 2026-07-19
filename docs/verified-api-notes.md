@@ -19,6 +19,14 @@
 | `Sensor.snapshot()` | 已验证 | 方法存在并可调用 |
 | `Sensor.set_hmirror()` | 已验证 | 方法存在并可调用 |
 | `Sensor.set_vflip()` | 已验证 | 方法存在并可调用 |
+| `Sensor.reset()`, `set_framesize()`, `set_pixformat()`, `run()` | 已验证 | 黄色轨道程序已连续取得 640x480 RGB888 图像 |
+| `Sensor.auto_exposure()` | 已验证 | 在 `run()` 前调用后程序可正常进入采集循环 |
+| `cv_lite.rgb888_find_blobs()` | 已验证 | 实机已检出黄色轨道并返回可用外接框 |
+| 图像 `to_numpy_ref()`, `to_rgb565()` | 已验证 | cv_lite 输入和 LCD RGB565 显示链路正常 |
+| `draw_line()`, `draw_rectangle()`, `draw_cross()`, `draw_string_advanced()` | 已验证 | 实机画面已显示框、中心线、十字和状态文字 |
+| `Display.ST7701`, `Display.init()`, `show_image()` | 已验证 | Yahboom 12Pin LCD 已正常显示检测画面 |
+| `MediaManager.init()` | 已验证 | Sensor 与 Display 媒体链路能够启动 |
+| `time.clock()` | 已验证 | 实机画面 FPS 约 23 |
 
 ## 实机纠正与版本差异
 
@@ -33,18 +41,13 @@
 
 | API/假设 | 状态 | 首次验证重点 |
 | --- | --- | --- |
-| `Sensor.reset()`, `set_framesize()`, `set_pixformat()`, `run()`, `stop()` | 待验证 | 初始化顺序、RGB888 输出和停止行为 |
-| `Sensor.auto_exposure()` | 待继续验证 | 官方要求在 `run()` 前调用；确认 Yahboom v1.8.0 实机返回和画面行为 |
-| `cv_lite.rgb888_find_blobs()` | 待验证 | 参数顺序、返回列表结构和实时 FPS |
+| `Sensor.stop()` | 待验证 | 正常停止和异常退出时的资源释放行为 |
 | `cv_lite.rgb888_find_rectangles_with_corners()` | 待验证/可退化 | Yahboom v1.8.0 是否包含；返回是否为每项 12 个数值 |
-| 图像 `to_numpy_ref()`, `to_rgb565()` | 待验证 | 格式兼容和内存占用 |
-| 图像绘制 API | 待验证 | 参数形式和 RGB565 显示效果 |
 | 图像 `save()` | 待验证 | `/sdcard` 挂载、JPEG 支持和写入耗时 |
-| `Display.ST7701` 与 800x480 | 待验证 | Yahboom 12Pin LCD 型号和方向 |
-| `Display.init()`, `show_image()`, `deinit()` | 待验证 | 初始化参数和资源释放顺序 |
-| `MediaManager.init()`, `deinit()` | 待验证 | 与 Sensor/Display 的调用顺序 |
+| `Display.deinit()` | 待验证 | 正常停止和异常退出时的资源释放行为 |
+| `MediaManager.deinit()` | 待验证 | 与 Sensor/Display 的释放顺序 |
 | `os.exitpoint()` | 待验证 | v1.8.0 行为 |
-| `time.clock()`, `ticks_ms()`, `ticks_diff()` | 待验证 | FPS 与计时接口 |
+| `time.ticks_ms()`, `ticks_diff()` | 待验证 | Debug 图片限频计时接口 |
 | MicroPython `math.atan2/sqrt/cos/sin/pi` | 待整程序确认 | 四角点方向、长度和中心线计算 |
 | `machine.UART` 引脚和 UART ID | 未启用 | 先确定 12Pin 板引脚复用和电平 |
 

@@ -156,18 +156,22 @@ def _draw_status(image, result, fps):
     axis_start = _clamp_point(result["axis_start"])
     axis_end = _clamp_point(result["axis_end"])
 
-    # 黄色矩形：cv_lite 最大黄色 Blob 的轴对齐外接框。
+    # 洋红色矩形：cv_lite 最大黄色 Blob 的轴对齐外接框。
+    # 不能使用黄色，因为黄色线画在黄色轨道上几乎看不见。
     image.draw_rectangle(
         bbox_x,
         bbox_y,
         bbox_width,
         bbox_height,
-        color=(255, 255, 0),
-        thickness=2,
+        color=(255, 0, 255),
+        thickness=3,
     )
 
-    # 绿色四边形：旋转矩形轮廓；若角点 API 不可用，则退化成 Blob 外接框。
-    _draw_closed_contour(image, result["contour"], color=(0, 255, 0))
+    # 绿色四边形只表示真正匹配到的旋转矩形。
+    # bbox_approx 模式的 contour 与上面的 Blob 外接框完全相同；如果仍画绿色，
+    # 会覆盖洋红框，让人误以为旋转矩形检测一直开启或一直成功。
+    if result["angle_source"] == "oriented_rect":
+        _draw_closed_contour(image, result["contour"], color=(0, 255, 0))
 
     # 红色线：轨道主方向；白色十字：黄色区域中心。
     image.draw_line(

@@ -98,8 +98,8 @@ track_valid=0 center_x=-1 center_y=-1 angle=0.00 length=0.0 angle_source=none fp
 LCD 标记含义：
 
 - 蓝框：配置的 ROI。
-- 黄框：最大黄色 Blob 外接框。
-- 绿框：估计的轨道轮廓。
+- 洋红框：最大黄色 Blob 外接框；使用高对比颜色避免与黄色轨道混在一起。
+- 绿框：仅在 `angle_source=oriented_rect` 时显示，表示角点 API 匹配的旋转轮廓。
 - 红线：轨道主方向。
 - 白色十字：黄色区域中心。
 
