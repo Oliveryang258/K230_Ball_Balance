@@ -1,0 +1,25 @@
+# CanMV / MicroPython generated files
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local test/debug output
+logs/*
+!logs/.gitkeep
+*.jpg
+*.jpeg
+*.png
+*.log
+.pytest_cache/
+.coverage
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
