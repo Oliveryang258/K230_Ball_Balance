@@ -15,7 +15,8 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_HMIRROR = False
 CAMERA_VFLIP = False
-CAMERA_AUTO_GAIN = True
+# CanMV 当前 API 使用 auto_exposure() 控制自动曝光。
+# 不配置“自动增益”：官方当前接口只有部分传感器支持的 again() 手动模拟增益。
 CAMERA_AUTO_EXPOSURE = True
 CAMERA_WARMUP_MS = 1000
 

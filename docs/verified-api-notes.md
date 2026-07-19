@@ -17,19 +17,24 @@
 | `cv_lite` | 已验证 | 模块可导入 |
 | `media.sensor.Sensor` | 已验证 | 类可导入 |
 | `Sensor.snapshot()` | 已验证 | 方法存在并可调用 |
-| `Sensor.set_auto_gain()` | 已验证 | 方法存在并可调用 |
-| `Sensor.get_gain_db()` | 已验证 | 方法存在并可调用 |
-| `Sensor.set_auto_exposure()` | 已验证 | 方法存在并可调用 |
-| `Sensor.get_exposure_us()` | 已验证 | 方法存在并可调用 |
-| `Sensor.get_rgb_gain_db()` | 已验证 | 方法存在并可调用 |
 | `Sensor.set_hmirror()` | 已验证 | 方法存在并可调用 |
 | `Sensor.set_vflip()` | 已验证 | 方法存在并可调用 |
+
+## 实机纠正与版本差异
+
+| API | 实机/文档结果 | 项目处理 |
+| --- | --- | --- |
+| `Sensor.set_auto_gain()` | Yahboom v1.8.0 实机报告方法不存在；当前官方 Sensor API 也未列出 | 已从运行代码删除，禁止继续按旧接口生成 |
+| `Sensor.auto_exposure(enable)` | 当前官方 API 名称；要求在 `sensor.run()` 前调用 | 已用于当前代码，仍需在本机继续运行确认 |
+| `Sensor.again([value])` | 当前官方手动模拟增益接口，仅部分传感器支持；设置增益要求传感器已经运行 | 第一阶段不调用 |
+| `set_auto_exposure()`, `get_gain_db()`, `get_exposure_us()`, `get_rgb_gain_db()` | 与当前官方 API 不一致，先前“已验证”记录缺少可复现证据 | 撤销已验证状态，除非实体板 `dir(sensor)` 和调用结果重新证明 |
 
 ## 当前代码使用但仍需整程序上板确认
 
 | API/假设 | 状态 | 首次验证重点 |
 | --- | --- | --- |
 | `Sensor.reset()`, `set_framesize()`, `set_pixformat()`, `run()`, `stop()` | 待验证 | 初始化顺序、RGB888 输出和停止行为 |
+| `Sensor.auto_exposure()` | 待继续验证 | 官方要求在 `run()` 前调用；确认 Yahboom v1.8.0 实机返回和画面行为 |
 | `cv_lite.rgb888_find_blobs()` | 待验证 | 参数顺序、返回列表结构和实时 FPS |
 | `cv_lite.rgb888_find_rectangles_with_corners()` | 待验证/可退化 | Yahboom v1.8.0 是否包含；返回是否为每项 12 个数值 |
 | 图像 `to_numpy_ref()`, `to_rgb565()` | 待验证 | 格式兼容和内存占用 |

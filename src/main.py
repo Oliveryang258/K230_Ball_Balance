@@ -213,7 +213,9 @@ def run():
         sensor.reset()
         sensor.set_hmirror(config.CAMERA_HMIRROR)
         sensor.set_vflip(config.CAMERA_VFLIP)
-        sensor.set_auto_gain(config.CAMERA_AUTO_GAIN)
+        # CanMV 当前 Sensor API 没有 set_auto_gain()。
+        # 自动增益由传感器默认策略处理；若后续确需手动模拟增益，应先确认
+        # 当前摄像头支持 again()，并按照官方要求在 sensor.run() 后设置。
         sensor.auto_exposure(config.CAMERA_AUTO_EXPOSURE)
         sensor.set_framesize(width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
         sensor.set_pixformat(Sensor.RGB888)

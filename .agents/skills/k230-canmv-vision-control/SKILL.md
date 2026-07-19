@@ -16,7 +16,7 @@ Before changing code, read the repository `AGENTS.md`, `docs/verified-api-notes.
 - Acquire frames through `media.sensor.Sensor` and `snapshot()`.
 - Prefer APIs confirmed on the device: `cv_lite`, `media.sensor.Sensor`, `aidemo`, and `nncase_runtime`.
 - Use `aidemo` or `nncase_runtime` only when the user explicitly requests AI inference; do not select them for the first-stage traditional-vision workflow.
-- Use confirmed camera controls when needed: `set_auto_gain()`, `get_gain_db()`, `set_auto_exposure()`, `get_exposure_us()`, `get_rgb_gain_db()`, `set_hmirror()`, and `set_vflip()`.
+- Use the current Sensor API names: `auto_exposure()`, `exposure()`, `again()`, `set_hmirror()`, and `set_vflip()`. Treat `again()` and manual exposure as sensor-dependent and follow their required before/after-`run()` ordering. Do not generate older OpenMV-style controls such as `set_auto_gain()`, `get_gain_db()`, `set_auto_exposure()`, `get_exposure_us()`, or `get_rgb_gain_db()` unless the exact Yahboom firmware exposes them and the project records that result.
 
 ## Enforce dependency boundaries
 
