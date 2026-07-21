@@ -29,3 +29,18 @@ def normalized_track_error(point, fixed_end, servo_end, clamp=True):
     if clamp:
         return max(-1.0, min(1.0, error))
     return error
+
+
+def pixel_position_error(ball_x, target_x):
+    """Return the signed horizontal pixel error for the fixed camera.
+
+    Camera-right is the physical fixed end. Therefore target_x - ball_x is
+    negative toward the fixed end and positive toward the servo-driven end.
+    """
+    return int(target_x) - int(ball_x)
+
+
+def position_is_safe(ball_x, safe_left_x, safe_right_x):
+    """Return True when the detected centre lies inside the safe range."""
+    ball_x = int(ball_x)
+    return int(safe_left_x) <= ball_x <= int(safe_right_x)

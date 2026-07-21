@@ -2,12 +2,13 @@
 
 Yahboom K230 12Pin + CanMV v1.8.0 MicroPython 小球平衡视觉控制项目。
 
-当前阶段只实现黄色轨道静态视觉测试：K230 获取 RGB888 图像，通过 `cv_lite` 找出最大黄色区域，并在 LCD 绘制 Blob 外接框、中心和长边参考线。该参考线不是实际轨道端点；暂不识别钢球，不启用 UART、PID 或舵机。
+当前阶段已进入钢球动态视觉测试：K230获取RGB888图像，通过已实机验证的`cv_lite.rgb888_find_circles()`检测钢球，并增加连续候选选择、轻量指数滤波和软件安全区状态，输出相对于实测物理中心`x=361`的整数像素误差。当前不启用UART、PID或舵机。
 
 ## 仓库入口
 
 - [开发与部署说明](docs/README.md)
 - [黄色轨道上板测试指南](docs/track-static-test.md)
+- [钢球静态上板测试指南](docs/ball-static-test.md)
 - [机械结构与初步模型](docs/mechanical_model.md)
 - [已验证 API 记录](docs/verified-api-notes.md)
 - [项目长期规则](AGENTS.md)

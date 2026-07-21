@@ -8,7 +8,7 @@ Runtime: CanMV K230 Yahboom v1.8.0 MicroPython.
 # -----------------------------------------------------------------------------
 # 摄像头配置
 # -----------------------------------------------------------------------------
-# cv_lite.rgb888_find_blobs() 要求输入 RGB888，因此 main.py 会把 Sensor
+# cv_lite.rgb888_find_circles() 要求输入 RGB888，因此 main.py 会把 Sensor
 # 输出格式设置成 Sensor.RGB888。640x480 适合第一阶段：画面足够清楚，内存和
 # 运算量也比 1080P 小得多。
 CAMERA_WIDTH = 640
@@ -63,7 +63,7 @@ CONSOLE_INTERVAL_FRAMES = 10
 
 DEBUG_IMAGE_ENABLED = True
 # 本阶段专用文件名，避免与后续钢球 Debug 图片混淆。
-DEBUG_IMAGE_PATH = "/sdcard/track_debug.jpg"
+DEBUG_IMAGE_PATH = "/sdcard/ball_debug.jpg"
 DEBUG_SAVE_INTERVAL_MS = 5000
 GC_INTERVAL_FRAMES = 30
 
@@ -86,6 +86,49 @@ MODEL_R_SERVO_CM = 1.5
 MODEL_L_DRIVE_CM = 24.8
 
 # -----------------------------------------------------------------------------
-# 钢球参数暂不添加
+# 钢球静态检测配置（当前阶段使用）
 # -----------------------------------------------------------------------------
-# 本阶段 main.py 不导入 BallDetector，不识别钢球，也不输出控制量。
+# 当前钢球在深色Blob阈值下会与背景/阴影形成大连通区域，因此正式链路
+# 使用已在Yahboom v1.8.0实机验证的霍夫圆检测。
+# 当前现场已把左边界扩展到x=10。检测ROI可以比软件安全区更宽：
+# 这样球虽然已经越过安全线，K230仍可报告“看得见但不安全”。
+BALL_ROI = (10, 205, 620, 90)
+BALL_CIRCLE_DP = 1
+BALL_CIRCLE_MIN_DIST = 30
+BALL_CIRCLE_PARAM1 = 80
+BALL_CIRCLE_PARAM2 = 20
+BALL_CIRCLE_MIN_RADIUS = 8
+BALL_CIRCLE_MAX_RADIUS = 35
+
+# -----------------------------------------------------------------------------
+# 钢球连续跟踪参数
+# -----------------------------------------------------------------------------
+# 首次找到多个圆且没有上一帧位置参考时，优先选择半径最接近17 px的圆。
+# 17来自当前相机距离下多次静态实测的典型钢球半径，不是物理半径。
+BALL_EXPECTED_RADIUS = 17
+
+# 已经跟踪到钢球后，只接受距离上一帧不超过80 px的候选圆。
+# 该限制用于排除突然跳到远处反光点；若高速滚动时连续丢球，可适当增大。
+BALL_TRACK_MAX_JUMP_PX = 80
+
+# 相邻有效帧的半径变化不能超过8 px，用于排除突然变大的反光圆。
+# 日志中的正常半径主要为13～20 px，因此8 px保留了较宽余量。
+BALL_TRACK_MAX_RADIUS_CHANGE = 8
+
+# 连续3帧没有合格候选后，忘记旧位置并允许在全ROI重新捕获钢球。
+# 在约20 FPS下对应约0.15秒；在此期间每个失败帧仍立即输出ball_valid=0。
+BALL_TRACK_LOST_RESET_FRAMES = 3
+
+# 一阶指数滤波系数：0.5表示新测量和历史滤波值各占一半。
+# 数值越小越平滑但延迟越大；当前先在抖动和实时性之间取中间值。
+BALL_FILTER_ALPHA = 0.5
+
+# 2026-07-21三点实测：轨道物理中心在x=360～362，暂取361作为控制零点。
+# 画面右侧对应固定端，因此error_px = TARGET_X - ball_x：
+#   error_px < 0 固定端；error_px = 0 中心；error_px > 0 舵机端。
+BALL_TARGET_X = 361
+
+# x约24和625时钢球已贴近画面边缘。闭环前先把60～598定义为软件安全区，
+# 避免把仍能偶尔检出的半截钢球误当作正常可控状态。
+BALL_SAFE_LEFT_X = 60
+BALL_SAFE_RIGHT_X = 598

@@ -80,3 +80,39 @@
 FPS/异常：
 结论：已验证 / 失败 / 需复测
 ```
+
+## 2026-07-21 steel-ball circle test
+
+- Firmware: `CanMV v1.8-0-gc2d1f5c`, board string `k230_canmv_yahboom`, sensor `gc2093_csi2`.
+- `cv_lite.rgb888_find_circles()` is verified present and callable on the physical device.
+- Verified parameters at 640x480 RGB888: `dp=1`, `minDist=30`, `param1=80`, `param2=20`, `minRadius=8`, `maxRadius=35`.
+- Observed ball radius: mainly 13-20 pixels; stable FPS: about 20.5.
+- Fixed ROI `(20,205,610,90)` retained left/centre/right ball detections and rejected an out-of-ROI circle `[114,192,20]`.
+- Empty track produced zero valid ROI circles during the recorded test.
+- The successful standalone script passed all six circle-control parameters as
+  integers.  An integrated revision that converted `dp=1` to `dp=1.0` produced
+  `TypeError: can't convert float to int` on the device.  Runtime code now keeps
+  `dp`, `minDist`, `param1`, `param2`, `minRadius`, and `maxRadius` as integers.
+  The corrected integrated program was subsequently verified at about 21 FPS.
+
+## 2026-07-21 three-point position calibration
+
+- Camera-right corresponds to the mechanical fixed-pivot end; camera-left
+  corresponds to the servo-driven end.
+- Stable centres were approximately: camera-right extreme `(625,255)`, physical
+  track centre `(361,254)`, and camera-left extreme `(24,256)`.
+- The physical centre is intentionally not the image centre because the current
+  camera mount is offset. Runtime control error is therefore `361 - ball_x`,
+  without asymmetric left/right normalization.
+- Provisional software-safe centre range is `60..598`; the detected extremes are
+  too close to the image boundary for closed-loop use.
+
+## Pending dynamic tracking validation
+
+- The runtime now adds pure-MicroPython candidate continuity checks and an
+  allocation-light exponential filter after the already verified cv_lite call.
+- Initial unverified values are: expected radius `17`, per-frame jump limit
+  `80 px`, radius-change limit `8 px`, reset after `3` missed frames, and filter
+  alpha `0.5`.
+- These values are PC-logic tested only. They must not be marked verified until
+  free-rolling and vibration tests are observed on the physical K230.

@@ -8,7 +8,7 @@
 Camera -> K230 vision -> UART -> MCU PID -> Servo -> Track/Ball
 ```
 
-K230 负责图像采集、球/轨道检测、位置计算和 UART 测量输出；下位机负责 PID、舵机和闭环安全策略。当前第一阶段不使用 YOLO 或深度学习，只检测黄色轨道，不识别钢球、不发送 UART、不控制舵机。
+K230 负责图像采集、球/轨道检测、位置计算和 UART 测量输出；下位机负责 PID、舵机和闭环安全策略。当前使用固定俯拍相机测试钢球检测，不使用YOLO或深度学习，不发送UART，也不控制舵机。
 
 ## 目录结构
 
@@ -18,6 +18,7 @@ K230_Ball_Balance/
 ├── docs/
 │   ├── README.md
 │   ├── mechanical_model.md
+│   ├── ball-static-test.md
 │   ├── track-static-test.md
 │   └── verified-api-notes.md
 ├── data/
@@ -40,30 +41,26 @@ K230_Ball_Balance/
 
 ## 当前 Demo
 
-`src/vision/track_detector.py` 调用 `cv_lite.rgb888_find_blobs()` 找最大黄色细长连通区域。当前运行链路不再调用四角点矩形 API。检测成功后显示：
+`src/vision/ball_detector.py`调用`cv_lite.rgb888_find_circles()`，在固定轨道ROI内寻找半径合适的钢球圆，并利用上一有效帧的位置和半径排除跳变候选。该圆检测接口和基础参数已经在Yahboom v1.8.0实机验证；新增的连续跟踪和滤波参数仍需动态实测。检测成功后显示：
 
 ```text
-TRACK OK
-CX:xxx CY:xxx
-ANGLE:x.x
-LEN:xxx BLOB
+BALL OK
+RAW:xxx FIL:xxx
+ERRPX:+xxx
+R:xx
 ```
 
-洋红框是黄色 Blob 的轴对齐外接框，红线是该框的长边中线。`ANGLE` 目前只能是水平约 0° 或竖直约 -90°，仅用于调阈值，不代表真实轨道倾角。标注图限频保存到 `/sdcard/track_debug.jpg`。
+蓝框是软件ROI，两条青色竖线是软件安全边界，黄色竖线是实测轨道物理中心。绿色/橙色框分别表示安全/不安全的有效圆，红色十字是原始圆心，紫色小十字是滤波位置，`R`是半径。`ERRPX`采用`361-filtered_x`：负值表示偏向画面右侧固定端，正值表示偏向画面左侧舵机端。标注图限频保存到`/sdcard/ball_debug.jpg`。
 
-`src/config.py` 中的黄色 RGB 阈值来自项目照片的目测起始值，必须在真实 K230 摄像头、光照和曝光条件下标定：
-
-```python
-[R_min, R_max, G_min, G_max, B_min, B_max]
-```
+当前圆检测实测参数为`dp=1`、`minDist=30`、`param1=80`、`param2=20`、半径`8～35`像素；后续只有在视角、距离或光照改变时才重新标定。
 
 ## 上板部署
 
 1. 电脑 B 使用 CanMV IDE 连接 Yahboom K230 12Pin。
 2. 将 `src/` **内部的文件和目录**复制到 K230 的 `/sdcard/K230_Ball_Balance/`，保持 `vision/`、`communication/`、`control/`、`utils/` 结构。
 3. 在 CanMV IDE 打开 `/sdcard/K230_Ball_Balance/main.py`。
-4. 按照 `docs/track-static-test.md` 先运行固件自带示例，再运行本项目。
-5. 根据实机调整 `TRACK_RGB_THRESHOLD`、`TRACK_MIN_AREA`、`TRACK_KERNEL_SIZE` 和 `TRACK_ROI`。
+4. 按照 `docs/ball-static-test.md` 运行本项目。
+5. 只需打开`main.py`，调整顶部的`TUNE_BALL_*`现场参数。
 6. 把成功或失败的 API 现象记录到 `docs/verified-api-notes.md`。
 
 设备端不需要额外安装 Python 包。不要把仓库的 `tests/`、`docs/` 或 `.agents/` 上传为运行代码。
@@ -81,13 +78,11 @@ python -m compileall -q src tests/pc
 
 ## 开发路线
 
-1. 验证 Sensor、LCD、黄色 Blob 和 `/sdcard/track_debug.jpg`。
-2. 固定相机并标定黄色阈值、面积、ROI 和 Blob 稳定性，记录 FPS。
-3. 开始钢球识别，并验证钢球不会破坏黄色轨道检测。
-4. 使用固定端 Marker A 和舵机端 Marker B 建立有向轨道坐标系。
-5. 将球心投影到 AB，输出 A=-1、中点=0、B=1 的 `normalized_error`。
-6. 加入滤波、有效标志、整数误差和 UART 帧协议。
-7. 完成失联、未检出、越界和舵机限幅策略后，再与下位机 PID 联调。
+1. 固定相机，验证钢球圆检测ROI、半径范围和检测稳定性。
+2. 在当前约20 cm可见区间内验证球心输出连续、单调且没有明显误检。
+3. 改善安装或视野，标定完整有效轨道两端及机械方向。
+4. 加入滤波、有效标志、整数误差和UART帧协议。
+5. 完成失联、未检出、越界和舵机限幅策略后，再与下位机PID联调。
 
 机械结构、一级近似模型、未验证假设和标定计划见 `docs/mechanical_model.md`。PC 端可使用 `tools/mechanical_model.py` 计算理论趋势、读取标定 CSV、拟合简单模型并绘图；该工具和 NumPy/pandas/matplotlib 都不上传到 K230。后续控制器优先采用正反向实测标定结果，而不是完全依赖理论公式。
 

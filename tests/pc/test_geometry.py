@@ -10,7 +10,12 @@ sys.path.insert(0, str(SRC_DIR))
 
 from control.filter import ExponentialFilter
 from communication.uart import format_measurement
-from vision.geometry import normalized_track_error, project_ratio
+from vision.geometry import (
+    normalized_track_error,
+    pixel_position_error,
+    position_is_safe,
+    project_ratio,
+)
 
 
 class GeometryTests(unittest.TestCase):
@@ -32,6 +37,17 @@ class GeometryTests(unittest.TestCase):
     def test_coincident_markers_are_rejected(self):
         with self.assertRaises(ValueError):
             project_ratio((1, 1), (0, 0), (0, 0))
+
+    def test_pixel_error_uses_fixed_end_negative_direction(self):
+        self.assertEqual(pixel_position_error(625, 361), -264)
+        self.assertEqual(pixel_position_error(361, 361), 0)
+        self.assertEqual(pixel_position_error(24, 361), 337)
+
+    def test_safe_pixel_range_is_inclusive(self):
+        self.assertTrue(position_is_safe(60, 60, 598))
+        self.assertTrue(position_is_safe(598, 60, 598))
+        self.assertFalse(position_is_safe(59, 60, 598))
+        self.assertFalse(position_is_safe(599, 60, 598))
 
 
 class FilterTests(unittest.TestCase):
