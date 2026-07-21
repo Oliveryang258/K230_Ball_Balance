@@ -22,6 +22,7 @@
 | `Sensor.reset()`, `set_framesize()`, `set_pixformat()`, `run()` | 已验证 | 黄色轨道程序已连续取得 640x480 RGB888 图像 |
 | `Sensor.auto_exposure()` | 已验证 | 在 `run()` 前调用后程序可正常进入采集循环 |
 | `cv_lite.rgb888_find_blobs()` | 已验证 | 实机已检出黄色轨道并返回可用外接框 |
+| `cv_lite.rgb888_find_rectangles_with_corners()` | 已验证 | 删除例程中不兼容的增益设置后，可检测标准矩形并返回外接框和四角点；对距离和逐帧边缘波动敏感 |
 | 图像 `to_numpy_ref()`, `to_rgb565()` | 已验证 | cv_lite 输入和 LCD RGB565 显示链路正常 |
 | `draw_line()`, `draw_rectangle()`, `draw_cross()`, `draw_string_advanced()` | 已验证 | 实机画面已显示框、中心线、十字和状态文字 |
 | `Display.ST7701`, `Display.init()`, `show_image()` | 已验证 | Yahboom 12Pin LCD 已正常显示检测画面 |
@@ -35,6 +36,7 @@
 | `Sensor.set_auto_gain()` | Yahboom v1.8.0 实机报告方法不存在；当前官方 Sensor API 也未列出 | 已从运行代码删除，禁止继续按旧接口生成 |
 | `Sensor.auto_exposure(enable)` | 当前官方 API 名称；要求在 `sensor.run()` 前调用 | 已用于当前代码，仍需在本机继续运行确认 |
 | `Sensor.again([value])` | 当前官方手动模拟增益接口，仅部分传感器支持；设置增益要求传感器已经运行 | 第一阶段不调用 |
+| Yahboom矩形例程中的 `sensor.again(k_sensor_gain对象)` | v1.8.0 实机报错 `cannot convert struct to float` | 例程与固件绑定签名不一致；删除可选增益段后再验证矩形接口，不向 `again()` 传结构体 |
 | `set_auto_exposure()`, `get_gain_db()`, `get_exposure_us()`, `get_rgb_gain_db()` | 与当前官方 API 不一致，先前“已验证”记录缺少可复现证据 | 撤销已验证状态，除非实体板 `dir(sensor)` 和调用结果重新证明 |
 
 ## 当前代码使用但仍需整程序上板确认
@@ -42,13 +44,11 @@
 | API/假设 | 状态 | 首次验证重点 |
 | --- | --- | --- |
 | `Sensor.stop()` | 待验证 | 正常停止和异常退出时的资源释放行为 |
-| `cv_lite.rgb888_find_rectangles_with_corners()` | 待验证/可退化 | Yahboom v1.8.0 是否包含；返回是否为每项 12 个数值 |
 | 图像 `save()` | 待验证 | `/sdcard` 挂载、JPEG 支持和写入耗时 |
 | `Display.deinit()` | 待验证 | 正常停止和异常退出时的资源释放行为 |
 | `MediaManager.deinit()` | 待验证 | 与 Sensor/Display 的释放顺序 |
 | `os.exitpoint()` | 待验证 | v1.8.0 行为 |
 | `time.ticks_ms()`, `ticks_diff()` | 待验证 | Debug 图片限频计时接口 |
-| MicroPython `math.atan2/sqrt/cos/sin/pi` | 待整程序确认 | 四角点方向、长度和中心线计算 |
 | `machine.UART` 引脚和 UART ID | 未启用 | 先确定 12Pin 板引脚复用和电平 |
 
 ## 本轮代码所依据的示例/文档
@@ -63,7 +63,7 @@
 | `draw_line()`, `draw_rectangle()`, `draw_cross()`, `draw_string_advanced()` | CanMV 图像绘制 API/例程 |
 | `Display.ST7701`, `Display.show_image()` | CanMV 800x480 LCD Display 示例 |
 
-程序启动时会用 `hasattr()` 检查两个 cv_lite 函数。Blob 函数缺失时停止并报告；四角点矩形函数缺失时继续运行，角度来源标记为 `bbox_approx`。
+当前轨道程序启动时只用 `hasattr()` 检查 `rgb888_find_blobs()`；缺失时停止并报告。四角点矩形 API 虽已在独立例程中实机验证，但因对距离和边缘波动敏感，已从当前运行链路删除。
 
 ## 实机验证记录模板
 

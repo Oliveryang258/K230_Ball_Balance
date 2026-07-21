@@ -72,7 +72,7 @@ Do not put the full algorithm in `main.py`. Include a concise header docstring i
 
 ## Compute track-relative error
 
-Treat Marker A as the fixed/left end and Marker B as the servo/right end. For ball center `P`, project `P` onto directed vector `AB`:
+Treat Marker A as the fixed-pivot end and Marker B as the servo-driven end. In the current mechanism A is physically on the right and B on the left; never infer marker identity from image left/right because camera orientation may change. For ball center `P`, project `P` onto directed vector `AB`:
 
 ```text
 t = dot(P - A, B - A) / dot(B - A, B - A)

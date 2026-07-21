@@ -1,7 +1,7 @@
 """PC-only TrackDetector logic tests with a fake cv_lite module.
 
-These tests verify selection and fallback logic only. They do not prove that the real
-Yahboom CanMV v1.8.0 firmware implements the same API behavior.
+These tests verify Blob selection only.  They do not prove real K230 firmware
+behaviour; the teammate's physical CanMV v1.8.0 device remains the final test.
 """
 
 import pathlib
@@ -13,12 +13,10 @@ import unittest
 SRC_DIR = pathlib.Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-# TrackDetector imports cv_lite at module load time. Computer A does not provide it,
-# so install a tiny fake module only inside this PC test process.
 FAKE_CV_LITE = types.ModuleType("cv_lite")
 sys.modules["cv_lite"] = FAKE_CV_LITE
 
-from vision.track_detector import ORIENTED_RECT_API, TrackDetector
+from vision.track_detector import TrackDetector
 
 
 class FakeImage:
@@ -26,7 +24,7 @@ class FakeImage:
         return "fake-image-reference"
 
 
-def make_detector(use_oriented_rect=True, allow_bbox_fallback=True):
+def make_detector():
     return TrackDetector(
         image_width=640,
         image_height=480,
@@ -35,56 +33,39 @@ def make_detector(use_oriented_rect=True, allow_bbox_fallback=True):
         kernel_size=3,
         roi=(0, 0, 640, 480),
         min_bbox_aspect_ratio=2.5,
-        use_oriented_rect=use_oriented_rect,
-        allow_bbox_fallback=allow_bbox_fallback,
-        rect_canny_low=50,
-        rect_canny_high=150,
-        rect_approx_epsilon=0.04,
-        rect_min_area_ratio=0.001,
-        rect_max_angle_cos=0.5,
-        rect_gaussian_size=5,
-        rect_min_overlap=0.20,
-        rect_min_aspect_ratio=2.5,
     )
 
 
 class TrackDetectorTests(unittest.TestCase):
     def setUp(self):
         FAKE_CV_LITE.rgb888_find_blobs = lambda *args: [100, 200, 400, 40]
-        if hasattr(FAKE_CV_LITE, ORIENTED_RECT_API):
-            delattr(FAKE_CV_LITE, ORIENTED_RECT_API)
 
-    def test_bbox_fallback_when_oriented_api_is_missing(self):
-        detector = make_detector()
-        result = detector.detect(FakeImage())
+    def test_long_blob_produces_bbox_axis(self):
+        result = make_detector().detect(FakeImage())
         self.assertTrue(result["track_valid"])
         self.assertEqual(result["center"], (300, 220))
+        self.assertEqual(result["axis_start"], (100, 220))
+        self.assertEqual(result["axis_end"], (500, 220))
         self.assertEqual(result["angle"], 0.0)
         self.assertEqual(result["length"], 400.0)
-        self.assertEqual(result["angle_source"], "bbox_approx")
+        self.assertEqual(result["axis_source"], "bbox_only")
 
-    def test_oriented_rectangle_is_used_when_available(self):
-        setattr(
-            FAKE_CV_LITE,
-            ORIENTED_RECT_API,
-            lambda *args: [[100, 200, 400, 40, 100, 200, 500, 200, 500, 240, 100, 240]],
-        )
-        detector = make_detector()
-        result = detector.detect(FakeImage())
-        self.assertEqual(result["angle_source"], "oriented_rect")
-        self.assertAlmostEqual(result["angle"], 0.0)
-        self.assertAlmostEqual(result["length"], 400.0)
+    def test_vertical_blob_produces_vertical_bbox_axis(self):
+        FAKE_CV_LITE.rgb888_find_blobs = lambda *args: [100, 50, 40, 300]
+        result = make_detector().detect(FakeImage())
+        self.assertEqual(result["axis_start"], (120, 50))
+        self.assertEqual(result["axis_end"], (120, 350))
+        self.assertEqual(result["angle"], -90.0)
+
+    def test_largest_elongated_blob_is_selected(self):
+        FAKE_CV_LITE.rgb888_find_blobs = lambda *args: [10, 10, 200, 20, 50, 100, 400, 40]
+        result = make_detector().detect(FakeImage())
+        self.assertEqual(result["bbox"], (50, 100, 400, 40))
 
     def test_non_elongated_blob_is_rejected(self):
         FAKE_CV_LITE.rgb888_find_blobs = lambda *args: [100, 100, 80, 80]
-        detector = make_detector()
-        self.assertIsNone(detector.detect(FakeImage()))
-
-    def test_no_fallback_returns_invalid_without_rectangle(self):
-        detector = make_detector(allow_bbox_fallback=False)
-        self.assertIsNone(detector.detect(FakeImage()))
+        self.assertIsNone(make_detector().detect(FakeImage()))
 
 
 if __name__ == "__main__":
     unittest.main()
-

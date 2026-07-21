@@ -58,24 +58,6 @@ TRACK_ROI = (0, 0, CAMERA_WIDTH, CAMERA_HEIGHT)
 # 黄色轨道应当明显细长。Blob 外接框长宽比小于该值时判为干扰物。
 TRACK_MIN_BBOX_ASPECT_RATIO = 2.5
 
-# 是否尝试 cv_lite 的“带四角点矩形检测”来估计旋转角。
-# 程序会先用 hasattr() 检查固件是否存在该 API；缺失时不会调用。
-TRACK_USE_ORIENTED_RECT = True
-TRACK_ALLOW_BBOX_FALLBACK = True
-
-# cv_lite.rgb888_find_rectangles_with_corners() 的官方示例参数。
-# 这些参数先保持接近官方默认值，上板看到实际轮廓后再调整。
-TRACK_RECT_CANNY_LOW = 50
-TRACK_RECT_CANNY_HIGH = 150
-TRACK_RECT_APPROX_EPSILON = 0.04
-TRACK_RECT_MIN_AREA_RATIO = 0.001
-TRACK_RECT_MAX_ANGLE_COS = 0.5
-TRACK_RECT_GAUSSIAN_SIZE = 5
-
-# 候选旋转矩形必须与黄色 Blob 外接框有一定重叠，并保持细长。
-TRACK_RECT_MIN_OVERLAP = 0.20
-TRACK_RECT_MIN_ASPECT_RATIO = 2.5
-
 # 控制台每隔多少帧输出一次，避免 print 严重拖慢帧率。
 CONSOLE_INTERVAL_FRAMES = 10
 
@@ -91,6 +73,17 @@ GC_INTERVAL_FRAMES = 30
 UART_ENABLED = False
 UART_ID = 1
 UART_BAUDRATE = 115200
+
+# -----------------------------------------------------------------------------
+# 机械模型参数预留（当前设备程序不使用）
+# -----------------------------------------------------------------------------
+# 这些数值只记录当前零位约定、人工安全范围和一级近似模型的粗测初值。
+# 它们尚未通过正反向标定，不得直接作为闭环控制、限位保护或精确补偿依据。
+SERVO_ZERO_DEG = 0.0
+RAIL_ZERO_OFFSET_DEG = 0.0
+SERVO_LIMIT_DEG = 90.0
+MODEL_R_SERVO_CM = 1.5
+MODEL_L_DRIVE_CM = 24.8
 
 # -----------------------------------------------------------------------------
 # 钢球参数暂不添加

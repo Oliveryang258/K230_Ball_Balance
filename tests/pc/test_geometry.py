@@ -10,29 +10,10 @@ sys.path.insert(0, str(SRC_DIR))
 
 from control.filter import ExponentialFilter
 from communication.uart import format_measurement
-from vision.geometry import estimate_rectangle_axis, normalized_track_error, project_ratio
+from vision.geometry import normalized_track_error, project_ratio
 
 
 class GeometryTests(unittest.TestCase):
-    def test_axis_aligned_rectangle(self):
-        result = estimate_rectangle_axis([(0, 0), (100, 0), (100, 20), (0, 20)])
-        self.assertEqual(result["center"], (50, 10))
-        self.assertAlmostEqual(result["angle"], 0.0)
-        self.assertAlmostEqual(result["length"], 100.0)
-        self.assertAlmostEqual(result["width"], 20.0)
-        self.assertAlmostEqual(result["aspect_ratio"], 5.0)
-
-    def test_rotated_rectangle(self):
-        # 长轴沿 y=x，期望角度约为 45 度。
-        result = estimate_rectangle_axis([(0, 0), (10, -10), (60, 40), (50, 50)])
-        self.assertEqual(result["center"], (30, 20))
-        self.assertAlmostEqual(result["angle"], 45.0)
-        self.assertGreater(result["length"], result["width"])
-
-    def test_rectangle_requires_four_corners(self):
-        with self.assertRaises(ValueError):
-            estimate_rectangle_axis([(0, 0), (1, 1)])
-
     def test_projection_endpoints_and_center(self):
         fixed = (0, 0)
         servo = (10, 0)

@@ -17,8 +17,13 @@ K230_Ball_Balance/
 ├── .agents/skills/k230-canmv-vision-control/SKILL.md
 ├── docs/
 │   ├── README.md
+│   ├── mechanical_model.md
 │   ├── track-static-test.md
 │   └── verified-api-notes.md
+├── data/
+│   └── servo_rail_calibration.csv
+├── tools/
+│   └── mechanical_model.py
 ├── src/
 │   ├── main.py
 │   ├── config.py
@@ -35,16 +40,16 @@ K230_Ball_Balance/
 
 ## 当前 Demo
 
-`src/vision/track_detector.py` 先调用 `cv_lite.rgb888_find_blobs()` 找最大黄色连通区域，再尝试用 `rgb888_find_rectangles_with_corners()` 获取四角点并估计旋转方向。检测成功后显示：
+`src/vision/track_detector.py` 调用 `cv_lite.rgb888_find_blobs()` 找最大黄色细长连通区域。当前运行链路不再调用四角点矩形 API。检测成功后显示：
 
 ```text
 TRACK OK
 CX:xxx CY:xxx
 ANGLE:x.x
-LEN:xxx oriented_rect
+LEN:xxx BLOB
 ```
 
-如果固件没有四角点矩形 API，程序不会调用它，而会显示 `bbox_approx`，表示角度只是黄色外接框长边近似。标注图限频保存到 `/sdcard/track_debug.jpg`。
+洋红框是黄色 Blob 的轴对齐外接框，红线是该框的长边中线。`ANGLE` 目前只能是水平约 0° 或竖直约 -90°，仅用于调阈值，不代表真实轨道倾角。标注图限频保存到 `/sdcard/track_debug.jpg`。
 
 `src/config.py` 中的黄色 RGB 阈值来自项目照片的目测起始值，必须在真实 K230 摄像头、光照和曝光条件下标定：
 
@@ -76,13 +81,15 @@ python -m compileall -q src tests/pc
 
 ## 开发路线
 
-1. 验证 Sensor、LCD、黄色 Blob、角度估计和 `/sdcard/track_debug.jpg`。
-2. 固定相机并标定黄色阈值、面积、ROI 和角度稳定性，记录 FPS。
+1. 验证 Sensor、LCD、黄色 Blob 和 `/sdcard/track_debug.jpg`。
+2. 固定相机并标定黄色阈值、面积、ROI 和 Blob 稳定性，记录 FPS。
 3. 开始钢球识别，并验证钢球不会破坏黄色轨道检测。
 4. 使用固定端 Marker A 和舵机端 Marker B 建立有向轨道坐标系。
 5. 将球心投影到 AB，输出 A=-1、中点=0、B=1 的 `normalized_error`。
 6. 加入滤波、有效标志、整数误差和 UART 帧协议。
 7. 完成失联、未检出、越界和舵机限幅策略后，再与下位机 PID 联调。
+
+机械结构、一级近似模型、未验证假设和标定计划见 `docs/mechanical_model.md`。PC 端可使用 `tools/mechanical_model.py` 计算理论趋势、读取标定 CSV、拟合简单模型并绘图；该工具和 NumPy/pandas/matplotlib 都不上传到 K230。后续控制器优先采用正反向实测标定结果，而不是完全依赖理论公式。
 
 ## Git 协作
 

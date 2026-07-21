@@ -27,7 +27,7 @@ from media.sensor import Sensor
 
 import config
 from utils.logger import DebugFrameSaver, log_error, log_info
-from vision.track_detector import ORIENTED_RECT_API, TrackDetector
+from vision.track_detector import TrackDetector
 
 
 # =============================================================================
@@ -49,19 +49,6 @@ TUNE_TRACK_KERNEL_SIZE = 1
 TUNE_TRACK_ROI = (0, 0, 640, 480)
 TUNE_TRACK_MIN_BBOX_ASPECT_RATIO = 2.5
 
-# 旋转矩形。排查黄色 Blob 时可先把 USE_ORIENTED_RECT 改成 False。
-TUNE_TRACK_USE_ORIENTED_RECT = True
-TUNE_TRACK_ALLOW_BBOX_FALLBACK = True
-TUNE_TRACK_RECT_CANNY_LOW = 50
-TUNE_TRACK_RECT_CANNY_HIGH = 150
-TUNE_TRACK_RECT_APPROX_EPSILON = 0.04
-TUNE_TRACK_RECT_MIN_AREA_RATIO = 0.001
-TUNE_TRACK_RECT_MAX_ANGLE_COS = 0.5
-TUNE_TRACK_RECT_GAUSSIAN_SIZE = 5
-TUNE_TRACK_RECT_MIN_OVERLAP = 0.20
-TUNE_TRACK_RECT_MIN_ASPECT_RATIO = 2.5
-
-
 def _apply_field_tuning():
     """用 main.py 顶部的现场值临时覆盖 config.py，不修改算法模块。"""
     if not FIELD_TUNING_ENABLED:
@@ -74,25 +61,13 @@ def _apply_field_tuning():
     config.TRACK_ROI = tuple(TUNE_TRACK_ROI)
     config.TRACK_MIN_BBOX_ASPECT_RATIO = float(TUNE_TRACK_MIN_BBOX_ASPECT_RATIO)
 
-    config.TRACK_USE_ORIENTED_RECT = bool(TUNE_TRACK_USE_ORIENTED_RECT)
-    config.TRACK_ALLOW_BBOX_FALLBACK = bool(TUNE_TRACK_ALLOW_BBOX_FALLBACK)
-    config.TRACK_RECT_CANNY_LOW = int(TUNE_TRACK_RECT_CANNY_LOW)
-    config.TRACK_RECT_CANNY_HIGH = int(TUNE_TRACK_RECT_CANNY_HIGH)
-    config.TRACK_RECT_APPROX_EPSILON = float(TUNE_TRACK_RECT_APPROX_EPSILON)
-    config.TRACK_RECT_MIN_AREA_RATIO = float(TUNE_TRACK_RECT_MIN_AREA_RATIO)
-    config.TRACK_RECT_MAX_ANGLE_COS = float(TUNE_TRACK_RECT_MAX_ANGLE_COS)
-    config.TRACK_RECT_GAUSSIAN_SIZE = int(TUNE_TRACK_RECT_GAUSSIAN_SIZE)
-    config.TRACK_RECT_MIN_OVERLAP = float(TUNE_TRACK_RECT_MIN_OVERLAP)
-    config.TRACK_RECT_MIN_ASPECT_RATIO = float(TUNE_TRACK_RECT_MIN_ASPECT_RATIO)
-
     print("field_tuning=ON")
     print("tune_threshold={}".format(config.TRACK_RGB_THRESHOLD))
     print("tune_roi={}".format(config.TRACK_ROI))
     print(
-        "tune_min_area={} kernel={} oriented_rect={}".format(
+        "tune_min_area={} kernel={} mode=blob_only".format(
             config.TRACK_MIN_AREA,
             config.TRACK_KERNEL_SIZE,
-            config.TRACK_USE_ORIENTED_RECT,
         )
     )
 
@@ -117,23 +92,8 @@ def _clamp_point(point):
     )
 
 
-def _draw_closed_contour(image, corners, color):
-    """依次连接四角点，形成轨道估计轮廓。"""
-    if corners is None or len(corners) != 4:
-        return
-
-    for index in range(4):
-        start = _clamp_point(corners[index])
-        end = _clamp_point(corners[(index + 1) % 4])
-        image.draw_line(
-            start[0], start[1], end[0], end[1],
-            color=color,
-            thickness=2,
-        )
-
-
 def _draw_status(image, result, fps):
-    """在 RGB565 显示帧上画 ROI、轮廓、中心线和文字。"""
+    """在 RGB565 显示帧上画 ROI、Blob 外接框、参考线和文字。"""
     # 蓝色框表示软件 ROI。初次测试为全画面，固定机位后可以在 config.py 缩小。
     roi_x, roi_y, roi_width, roi_height = config.TRACK_ROI
     image.draw_rectangle(
@@ -167,13 +127,7 @@ def _draw_status(image, result, fps):
         thickness=3,
     )
 
-    # 绿色四边形只表示真正匹配到的旋转矩形。
-    # bbox_approx 模式的 contour 与上面的 Blob 外接框完全相同；如果仍画绿色，
-    # 会覆盖洋红框，让人误以为旋转矩形检测一直开启或一直成功。
-    if result["angle_source"] == "oriented_rect":
-        _draw_closed_contour(image, result["contour"], color=(0, 255, 0))
-
-    # 红色线：轨道主方向；白色十字：黄色区域中心。
+    # 红线：轴对齐外接框的长边中线（不是实际端点）；白十字：Blob 中心。
     image.draw_line(
         axis_start[0], axis_start[1], axis_end[0], axis_end[1],
         color=(255, 0, 0),
@@ -201,7 +155,7 @@ def _draw_status(image, result, fps):
     )
     image.draw_string_advanced(
         10, 90, 18,
-        "LEN:{:.0f} {}".format(result["length"], result["angle_source"]),
+        "LEN:{:.0f} BLOB".format(result["length"]),
         color=(255, 255, 0),
     )
     image.draw_string_advanced(10, 114, 18, "FPS:{:.1f}".format(fps), color=(255, 255, 0))
@@ -212,19 +166,19 @@ def _print_result(result, fps):
     if result is None:
         print(
             "track_valid=0 center_x=-1 center_y=-1 angle=0.00 "
-            "length=0.0 angle_source=none fps={:.1f}".format(fps)
+            "length=0.0 axis_source=none fps={:.1f}".format(fps)
         )
         return
 
     center_x, center_y = result["center"]
     print(
         "track_valid=1 center_x={} center_y={} angle={:.2f} "
-        "length={:.1f} angle_source={} fps={:.1f}".format(
+        "length={:.1f} axis_source={} fps={:.1f}".format(
             center_x,
             center_y,
             result["angle"],
             result["length"],
-            result["angle_source"],
+            result["axis_source"],
             fps,
         )
     )
@@ -240,16 +194,6 @@ def _create_detector():
         kernel_size=config.TRACK_KERNEL_SIZE,
         roi=config.TRACK_ROI,
         min_bbox_aspect_ratio=config.TRACK_MIN_BBOX_ASPECT_RATIO,
-        use_oriented_rect=config.TRACK_USE_ORIENTED_RECT,
-        allow_bbox_fallback=config.TRACK_ALLOW_BBOX_FALLBACK,
-        rect_canny_low=config.TRACK_RECT_CANNY_LOW,
-        rect_canny_high=config.TRACK_RECT_CANNY_HIGH,
-        rect_approx_epsilon=config.TRACK_RECT_APPROX_EPSILON,
-        rect_min_area_ratio=config.TRACK_RECT_MIN_AREA_RATIO,
-        rect_max_angle_cos=config.TRACK_RECT_MAX_ANGLE_COS,
-        rect_gaussian_size=config.TRACK_RECT_GAUSSIAN_SIZE,
-        rect_min_overlap=config.TRACK_RECT_MIN_OVERLAP,
-        rect_min_aspect_ratio=config.TRACK_RECT_MIN_ASPECT_RATIO,
     )
 
 
@@ -267,10 +211,7 @@ def run():
         raise RuntimeError("required API missing: cv_lite.rgb888_find_blobs")
 
     print("cv_lite.rgb888_find_blobs=OK")
-    if capabilities[ORIENTED_RECT_API]:
-        print("cv_lite.{}=OK".format(ORIENTED_RECT_API))
-    else:
-        print("cv_lite.{}=MISSING, use bbox_approx".format(ORIENTED_RECT_API))
+    print("track_axis_mode=bbox_only")
 
     debug_saver = DebugFrameSaver(
         path=config.DEBUG_IMAGE_PATH,
