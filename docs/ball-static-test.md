@@ -30,7 +30,7 @@ TUNE_BALL_EXPECTED_RADIUS = 17
 TUNE_BALL_TRACK_MAX_JUMP_PX = 80
 TUNE_BALL_TRACK_MAX_RADIUS_CHANGE = 8
 TUNE_BALL_TRACK_LOST_RESET_FRAMES = 3
-TUNE_BALL_FILTER_ALPHA = 0.5
+TUNE_BALL_FILTER_ALPHA = 0.75
 ```
 
 实测钢球半径主要为13～20像素；左、中、右圆心分别约为`x=158～174`、`x=356～360`、`x=528～534`。一次ROI外圆`[114,192,20]`被正确排除；空轨道持续返回无有效圆。
@@ -99,5 +99,5 @@ tracking=follow detector=hough_circle fps=20.0
 - `tracking=follow`：使用上一有效帧的位置和半径选择连续候选；
 - `ball_valid=0`：当前帧没有可靠圆，滤波输出也会立即清除，不复用旧值。
 
-参数`max_jump=80`、`max_radius_change=8`、`lost_reset=3`和`alpha=0.5`
+参数`max_jump=80`、`max_radius_change=8`、`lost_reset=3`和`alpha=0.75`
 目前只是根据已有日志设定的第一轮动态参数，必须在实际自由滚动中复测。
