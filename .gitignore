@@ -21,10 +21,16 @@ logs/*
 tests/pc/build/
 
 # STM32CubeMX / Keil generated build products
-stm32/firmware/MDK-ARM/Objects/
-stm32/firmware/MDK-ARM/Listings/
-stm32/firmware/Debug/
-stm32/firmware/Release/
+stm32_ball_controller/MDK-ARM/Servo_Control/*.o
+stm32_ball_controller/MDK-ARM/Servo_Control/*.crf
+stm32_ball_controller/MDK-ARM/Servo_Control/*.d
+stm32_ball_controller/MDK-ARM/Servo_Control/*.axf
+stm32_ball_controller/MDK-ARM/Servo_Control/*.htm
+stm32_ball_controller/MDK-ARM/Servo_Control/*.map
+stm32_ball_controller/MDK-ARM/Servo_Control/*.lnp
+stm32_ball_controller/MDK-ARM/Servo_Control/*.dep
+stm32_ball_controller/MDK-ARM/Servo_Control/*.hex
+stm32_ball_controller/MDK-ARM/*.lst
 
 # OS files
 .DS_Store
