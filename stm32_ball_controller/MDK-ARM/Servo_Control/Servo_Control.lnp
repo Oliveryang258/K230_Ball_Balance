@@ -1,0 +1,25 @@
+--cpu Cortex-M3
+"servo_control\startup_stm32f103xb.o"
+"servo_control\main.o"
+"servo_control\stm32f1xx_it.o"
+"servo_control\stm32f1xx_hal_msp.o"
+"servo_control\stm32f1xx_hal_gpio_ex.o"
+"servo_control\stm32f1xx_hal_uart.o"
+"servo_control\stm32f1xx_hal.o"
+"servo_control\stm32f1xx_hal_rcc.o"
+"servo_control\stm32f1xx_hal_rcc_ex.o"
+"servo_control\stm32f1xx_hal_gpio.o"
+"servo_control\stm32f1xx_hal_dma.o"
+"servo_control\stm32f1xx_hal_cortex.o"
+"servo_control\stm32f1xx_hal_pwr.o"
+"servo_control\stm32f1xx_hal_flash.o"
+"servo_control\stm32f1xx_hal_flash_ex.o"
+"servo_control\stm32f1xx_hal_exti.o"
+"servo_control\system_stm32f1xx.o"
+"servo_control\app_uart_rx.o"
+"servo_control\control_guard.o"
+"servo_control\vision_protocol.o"
+--strict --scatter "Servo_Control\Servo_Control.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list "Servo_Control.map" -o Servo_Control\Servo_Control.axf

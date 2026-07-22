@@ -116,3 +116,19 @@ FPS/异常：
   alpha `0.5`.
 - These values are PC-logic tested only. They must not be marked verified until
   free-rolling and vibration tests are observed on the physical K230.
+
+## 2026-07-21 Yahboom 12Pin UART pin inspection
+
+- Firmware: `CanMV v1.8-0-gc2d1f5c`, board string `k230_canmv_yahboom`.
+- `machine.UART` exposes `UART1`, `UART2`, and `UART4` constants on this firmware.
+- `machine.FPIOA` exposes `UART2_TXD` and `UART2_RXD`, but this does **not** mean
+  that the Yahboom 4Pin connector is routed to UART2.
+- Physical-board inspection through `FPIOA.get_pin_func()` and `help()` showed:
+  - IO9 current function: `UART1_TXD` (internal function value `178`).
+  - IO9 supported functions include `UART1_TXD`.
+  - IO10 current function: `GPIO10` (internal function value `10`).
+  - IO10 supported functions include `UART1_RXD`.
+- Therefore the Yahboom 12Pin module's IO9/IO10 communication pair must use
+  `UART1`, not `UART2`. The initial one-way test only needs IO9 as TX.
+- UART construction and physical byte transmission remain unverified until the
+  required 3.3 V wiring is available.

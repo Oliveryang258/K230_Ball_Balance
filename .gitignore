@@ -18,6 +18,13 @@ logs/*
 *.log
 .pytest_cache/
 .coverage
+tests/pc/build/
+
+# STM32CubeMX / Keil generated build products
+stm32/firmware/MDK-ARM/Objects/
+stm32/firmware/MDK-ARM/Listings/
+stm32/firmware/Debug/
+stm32/firmware/Release/
 
 # OS files
 .DS_Store
