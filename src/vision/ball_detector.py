@@ -3,6 +3,7 @@
 
 设备 API：
 - cv_lite.rgb888_find_circles()
+- CanMV Image.copy(roi)
 - CanMV Image.to_numpy_ref()
 
 硬件：Yahboom K230 12Pin，板载摄像头，浅色轨道上的反光钢球。
@@ -57,6 +58,21 @@ class BallDetector:
         self.image_height = int(image_height)
         self.image_shape = [self.image_height, self.image_width]
         self.roi = tuple(roi)
+        self.roi_x = int(self.roi[0])
+        self.roi_y = int(self.roi[1])
+        self.roi_width = int(self.roi[2])
+        self.roi_height = int(self.roi[3])
+        self.roi_image_shape = [self.roi_height, self.roi_width]
+
+        # 霍夫圆只处理裁剪后的ROI小图，但结果仍恢复到640x480原图坐标。
+        if self.roi_width <= 0 or self.roi_height <= 0:
+            raise ValueError("roi width and height must be positive")
+        if self.roi_x < 0 or self.roi_y < 0:
+            raise ValueError("roi origin must not be negative")
+        if self.roi_x + self.roi_width > self.image_width:
+            raise ValueError("roi exceeds image width")
+        if self.roi_y + self.roi_height > self.image_height:
+            raise ValueError("roi exceeds image height")
         # Yahboom CanMV v1.8.0 的 cv_lite 绑定在实机上要求这里传整数。
         # 保持与已成功运行的独立例程 dp=1 完全相同，不能改成 1.0。
         self.dp = int(dp)
@@ -112,8 +128,9 @@ class BallDetector:
         roi_center_y = self.roi[1] + self.roi[3] // 2
 
         for index in range(0, len(raw_circles) - 2, 3):
-            center_x = int(raw_circles[index])
-            center_y = int(raw_circles[index + 1])
+            # cv_lite返回的是ROI局部坐标；加回偏移后继续使用原图坐标系。
+            center_x = int(raw_circles[index]) + self.roi_x
+            center_y = int(raw_circles[index + 1]) + self.roi_y
             radius = int(raw_circles[index + 2])
 
             # cv_lite 已按 min/max radius 检测，这里再次检查。
@@ -172,9 +189,12 @@ class BallDetector:
         if not hasattr(cv_lite, "rgb888_find_circles"):
             raise RuntimeError("cv_lite.rgb888_find_circles is missing")
 
-        image_array = image.to_numpy_ref()
+        # cv_lite圆检测没有ROI参数，所以先生成紧凑的RGB888轨道小图。
+        # 当前620x90 ROI只有原640x480画面约18.2%的像素。
+        roi_image = image.copy(self.roi)
+        image_array = roi_image.to_numpy_ref()
         raw_circles = cv_lite.rgb888_find_circles(
-            self.image_shape,
+            self.roi_image_shape,
             image_array,
             self.dp,
             self.min_dist,
@@ -183,6 +203,9 @@ class BallDetector:
             self.min_radius,
             self.max_radius,
         )
+        # cv_lite已经完成读取，立即释放临时ROI引用，降低内存滞留风险。
+        del image_array
+        del roi_image
         result = self._select_candidate(raw_circles)
 
         if result is None:

@@ -117,6 +117,21 @@ FPS/异常：
 - These values are PC-logic tested only. They must not be marked verified until
   free-rolling and vibration tests are observed on the physical K230.
 
+## Pending ROI-only Hough-circle validation
+
+- `cv_lite.rgb888_find_circles()` has no ROI argument in its documented
+  signature.
+- The detector now uses the documented CanMV `Image.copy(roi)` operation to
+  create a compact RGB888 track image before calling cv_lite.
+- With the current `(10,205,620,90)` ROI, the Hough input is reduced from
+  `640x480` (307,200 pixels) to `620x90` (55,800 pixels), about 18.2% of the
+  previous search area.
+- Local circle centres are translated back to the original 640x480 coordinate
+  system, so `BALL_TARGET_X`, safety limits, LCD overlays, and the UART protocol
+  do not change.
+- `Image.copy(roi)` on RGB888 and the resulting FPS/memory behavior are
+  documentation-backed but not yet verified on the Yahboom v1.8.0 device.
+
 ## 2026-07-21 Yahboom 12Pin UART pin inspection
 
 - Firmware: `CanMV v1.8-0-gc2d1f5c`, board string `k230_canmv_yahboom`.

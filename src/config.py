@@ -33,7 +33,7 @@ DISPLAY_TO_IDE = True
 # 控制台每隔多少帧输出一次，避免 print 严重拖慢帧率。
 CONSOLE_INTERVAL_FRAMES = 10
 
-DEBUG_IMAGE_ENABLED = True
+DEBUG_IMAGE_ENABLED = False
 # 本阶段专用文件名，避免与后续钢球 Debug 图片混淆。
 DEBUG_IMAGE_PATH = "/sdcard/ball_debug.jpg"
 DEBUG_SAVE_INTERVAL_MS = 5000
