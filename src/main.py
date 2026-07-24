@@ -14,7 +14,7 @@
 media.media.MediaManager、cv_lite.rgb888_find_circles()、CanMV Image绘图接口、
 machine.FPIOA和machine.UART。
 硬件：Yahboom K230 12Pin、板载摄像头/LCD、浅色轨道、钢球。
-运行时：CanMV K230 Yahboom v1.8.0 MicroPython；需要电脑B实机验证参数。
+运行时：CanMV K230 Yahboom v1.8.0 
 """
 
 import gc
@@ -34,7 +34,7 @@ from vision.geometry import pixel_position_error, position_is_safe
 
 
 # =============================================================================
-# 现场调参区：CanMV IDE只打开main.py时，优先修改这里
+# 调参区：CanMV IDE只打开main.py时，优先修改这里
 # =============================================================================
 FIELD_TUNING_ENABLED = True
 
