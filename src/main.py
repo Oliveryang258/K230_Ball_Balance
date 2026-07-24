@@ -7,11 +7,12 @@
     Sensor RGB888采集 -> cv_lite霍夫圆检测 -> ROI/半径过滤
     -> 钢球中心 -> 相对物理中心的整数像素误差 -> LCD和控制台调试
 
-本阶段明确不启用UART、PID和舵机控制。当前相机右侧对应固定端，
-error_px为负；相机左侧对应舵机端，error_px为正。
+本阶段启用K230到STM32的单向UART视觉测量，但仍不启用PID和舵机闭环。
+当前相机右侧对应固定端，error_px为负；相机左侧对应舵机端，error_px为正。
 
 使用的CanMV API：media.sensor.Sensor、media.display.Display、
-media.media.MediaManager、cv_lite.rgb888_find_circles()、CanMV Image绘图接口。
+media.media.MediaManager、cv_lite.rgb888_find_circles()、CanMV Image绘图接口、
+machine.FPIOA和machine.UART。
 硬件：Yahboom K230 12Pin、板载摄像头/LCD、浅色轨道、钢球。
 运行时：CanMV K230 Yahboom v1.8.0 MicroPython；需要电脑B实机验证参数。
 """
@@ -25,6 +26,7 @@ from media.media import MediaManager
 from media.sensor import Sensor
 
 import config
+from communication.uart import VisionUart
 from control.filter import ExponentialFilter
 from utils.logger import DebugFrameSaver, log_error, log_info
 from vision.ball_detector import BallDetector
@@ -300,8 +302,9 @@ def _print_result(result, fps):
 
 
 def run():
-    """初始化摄像头/LCD，循环检测钢球，并在退出时释放资源。"""
+    """初始化摄像头/LCD/UART，循环检测并发送钢球测量。"""
     sensor = None
+    vision_uart = None
     media_initialized = False
     display_initialized = False
 
@@ -312,7 +315,15 @@ def run():
         raise RuntimeError("required API missing: cv_lite.rgb888_find_circles")
     print("cv_lite.rgb888_find_circles=OK")
     print("ball_detection=hough_circle_in_fixed_roi")
-    print("uart=OFF servo=OFF")
+    print(
+        "uart={} id={} baud={} tx_io={} rx_io={} servo=OFF".format(
+            "ON" if config.UART_ENABLED else "OFF",
+            config.UART_ID,
+            config.UART_BAUDRATE,
+            config.UART_TX_PIN,
+            config.UART_RX_PIN,
+        )
+    )
 
     debug_saver = DebugFrameSaver(
         path=config.DEBUG_IMAGE_PATH,
@@ -323,6 +334,14 @@ def run():
     frame_count = 0
 
     try:
+        vision_uart = VisionUart(
+            uart_id=config.UART_ID,
+            baudrate=config.UART_BAUDRATE,
+            tx_pin=config.UART_TX_PIN,
+            rx_pin=config.UART_RX_PIN,
+            enabled=config.UART_ENABLED,
+        )
+
         sensor = Sensor(width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
         sensor.reset()
         sensor.set_hmirror(config.CAMERA_HMIRROR)
@@ -354,6 +373,19 @@ def run():
                 position_filter,
             )
 
+            # 每处理完一帧就发送一次，包括“没有找到球”的无效帧。
+            # 这样STM32可以区分：通信超时、通信正常但视觉无效、球有效但越界。
+            if result is None:
+                # 使用位置参数避免在每帧循环中创建关键字参数对象。
+                vision_uart.send_measurement(False, False, 0, -1)
+            else:
+                vision_uart.send_measurement(
+                    True,
+                    result["ball_safe"],
+                    result["error_px"],
+                    result["filtered_x"],
+                )
+
             # cv_lite处理完成后再转RGB565，避免破坏检测输入。
             display_frame = frame.to_rgb565()
             _draw_status(display_frame, result, clock.fps())
@@ -378,6 +410,11 @@ def run():
         log_error("Fatal error: {}".format(exc))
         raise
     finally:
+        if vision_uart is not None:
+            try:
+                vision_uart.deinit()
+            except BaseException:
+                pass
         if sensor is not None:
             try:
                 sensor.stop()

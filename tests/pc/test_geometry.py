@@ -9,7 +9,7 @@ SRC_DIR = pathlib.Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from control.filter import ExponentialFilter
-from communication.uart import format_measurement
+from communication.uart import encode_measurement
 from vision.geometry import (
     normalized_track_error,
     pixel_position_error,
@@ -60,11 +60,33 @@ class FilterTests(unittest.TestCase):
 
 
 class UartFormatTests(unittest.TestCase):
-    def test_valid_measurement_uses_integer_error(self):
-        self.assertEqual(format_measurement(0.1256, (320, 240)), "BALL,1,126,320,240\n")
+    def test_valid_safe_measurement_matches_stm32_v1_layout(self):
+        frame = encode_measurement(
+            frame_id=0,
+            ball_valid=True,
+            ball_safe=True,
+            error_px=123,
+            ball_x=238,
+        )
+        self.assertEqual(
+            bytes(frame),
+            bytes((0xAA, 0x55, 0x01, 0x03, 0x00, 0x00, 0x7B, 0x00, 0xEE, 0x00, 0x97)),
+        )
 
-    def test_invalid_measurement_is_explicit(self):
-        self.assertEqual(format_measurement(None, valid=False), "BALL,0,0,-1,-1\n")
+    def test_invalid_measurement_cannot_look_like_zero_error(self):
+        frame = encode_measurement(
+            frame_id=0x1234,
+            ball_valid=False,
+            ball_safe=True,
+            error_px=99,
+            ball_x=320,
+        )
+        self.assertEqual(frame[3], 0)
+        self.assertEqual(bytes(frame[4:10]), bytes((0x34, 0x12, 0x00, 0x00, 0xFF, 0xFF)))
+        checksum = 0
+        for value in frame[2:10]:
+            checksum ^= value
+        self.assertEqual(frame[10], checksum)
 
 
 if __name__ == "__main__":

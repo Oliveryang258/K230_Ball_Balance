@@ -130,5 +130,35 @@ FPS/异常：
   - IO10 supported functions include `UART1_RXD`.
 - Therefore the Yahboom 12Pin module's IO9/IO10 communication pair must use
   `UART1`, not `UART2`. The initial one-way test only needs IO9 as TX.
-- UART construction and physical byte transmission remain unverified until the
-  required 3.3 V wiring is available.
+- At the time of this pin inspection, UART construction and physical byte
+  transmission were still unverified; the following 2026-07-22 test completed
+  that validation.
+
+## 2026-07-22 K230 to STM32 UART link validation
+
+- Firmware: `CanMV v1.8-0-gc2d1f5c`, board string `k230_canmv_yahboom`.
+- `machine.FPIOA`, `FPIOA.set_function()`, `machine.UART`, `UART.write()`, and
+  `UART.deinit()` were exercised by the standalone `src/uart_link_test.py`.
+- IO9 was mapped to `FPIOA.UART1_TXD`; IO10 also had to be mapped to
+  `FPIOA.UART1_RXD` before constructing UART1, even though the physical test was
+  transmit-only.  Without the IO10 mapping, construction failed with
+  `UART(1) rx not configured, see machine FPIOA`.
+- Link settings were UART1, 115200 baud, 8 data bits, no parity, and 1 stop bit.
+- The K230 transmitted the fixed 11-byte V1 binary frame at about 20 Hz through
+  IO9 to STM32F103 USART1 RX on PA10, with a shared ground and no VCC connection.
+- The STM32 `g_measurement.frame_id` increased continuously.  Because that
+  field is published only after header, version, length, and XOR checksum
+  validation, this verifies K230 transmission, physical wiring, STM32 interrupt
+  reception, and V1 frame parsing as an end-to-end one-way link.
+- The standalone fixed-frame link is verified.  Sending live camera measurements
+  from `src/main.py` remains a separate pending integration step.
+
+## 2026-07-22 live vision UART integration
+
+- The integrated K230 `src/main.py` successfully sent live camera measurement
+  frames through UART1 to the STM32 parser.
+- This verifies the runtime path from ball detection and filtered `ball_x` /
+  `error_px` fields through the V1 encoder and physical UART link.
+- The four guard transitions (ready, vision invalid, ball unsafe, and link
+  timeout) still require an explicit pre-closed-loop checklist even though the
+  live measurement transport itself passed.
