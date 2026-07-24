@@ -116,7 +116,7 @@ class BallDetector:
             center_y = int(raw_circles[index + 1])
             radius = int(raw_circles[index + 2])
 
-            # cv_lite 已按 min/max radius 检测，这里再次防御性检查。
+            # cv_lite 已按 min/max radius 检测，这里再次检查。
             if radius < self.min_radius or radius > self.max_radius:
                 continue
             if not _center_in_roi(center_x, center_y, self.roi):
