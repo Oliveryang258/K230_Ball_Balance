@@ -19,7 +19,7 @@ FLAG_BALL_SAFE = 0x02
 
 
 def _write_u16_le(buffer, offset, value):
-    """将有符号或无符号16位整数按小端序写入缓冲区。"""
+    """将有符号或无符号 16 位整数按小端序写入缓冲区。"""
     value &= 0xFFFF
     buffer[offset] = value & 0xFF
     buffer[offset + 1] = (value >> 8) & 0xFF
@@ -33,10 +33,10 @@ def encode_measurement(
     ball_x,
     buffer=None,
 ):
-    """编码STM32 V1协议帧；传入buffer时不产生新的帧缓冲区分配。
+    """编码 STM32 V1 协议帧；传入 buffer 时不产生新的帧缓冲区分配。
 
-    无效检测必须编码为valid=0、safe=0、error_px=0、ball_x=-1，避免
-    下位机把上一帧坐标或零误差误认为新的有效测量。
+    无效检测必须编码为 valid=0、safe=0、error_px=0、ball_x=-1，
+    避免下位机把上一帧坐标或零误差误认为新的有效测量。
     """
     if buffer is None:
         buffer = bytearray(FRAME_SIZE)
@@ -72,7 +72,7 @@ def encode_measurement(
 
 
 class VisionUart:
-    """预分配单帧缓冲区并通过UART1发送视觉测量。"""
+    """预分配单帧缓冲区，通过 UART1 发送视觉测量数据。"""
 
     def __init__(self, uart_id, baudrate, tx_pin, rx_pin, enabled=False):
         self.enabled = bool(enabled)
@@ -83,7 +83,7 @@ class VisionUart:
         if not self.enabled:
             return
 
-        # 延迟导入machine，保证PC端可以单独测试encode_measurement()。
+        # 延迟导入 machine，保证 PC 端可以单独测试 encode_measurement()。
         from machine import FPIOA, UART
 
         uart_name = "UART{}".format(int(uart_id))
@@ -96,7 +96,7 @@ class VisionUart:
 
         fpioa = FPIOA()
         fpioa.set_function(int(tx_pin), getattr(FPIOA, tx_name))
-        # CanMV UART构造函数会同时检查RX映射；即使当前只发送也必须配置。
+        # CanMV UART 构造函数会同时检查 RX 映射；即使当前只发送也必须配置。
         fpioa.set_function(int(rx_pin), getattr(FPIOA, rx_name))
 
         self._uart = UART(
@@ -109,10 +109,11 @@ class VisionUart:
 
     @property
     def frame_id(self):
+        """当前帧序号，每次发送后自动递增。"""
         return self._frame_id
 
     def send_measurement(self, ball_valid, ball_safe, error_px, ball_x):
-        """发送一帧；返回UART.write()写入的字节数，禁用时返回0。"""
+        """发送一帧视觉测量；返回 UART.write() 写入的字节数，禁用时返回 0。"""
         if not self.enabled or self._uart is None:
             return 0
 
@@ -129,6 +130,7 @@ class VisionUart:
         return written
 
     def deinit(self):
+        """释放 UART 资源。"""
         if self._uart is not None:
             self._uart.deinit()
             self._uart = None

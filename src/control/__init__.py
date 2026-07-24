@@ -1,2 +1,2 @@
-"""Signal conditioning helpers; actuator control belongs to the downstream MCU."""
+"""信号调理辅助模块；执行器控制属于下游 MCU。"""
 

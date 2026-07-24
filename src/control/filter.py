@@ -1,8 +1,8 @@
-"""Allocation-light measurement filtering.
+"""轻量分配测量滤波。
 
-APIs: MicroPython arithmetic only; no hardware API calls.
-Hardware: none; consumes K230 vision measurements.
-Runtime: compatible with CanMV K230 Yahboom v1.8.0 MicroPython.
+API：仅使用 MicroPython 算术运算，无硬件调用。
+硬件：无；消耗 K230 视觉测量结果。
+运行时：兼容 CanMV K230 Yahboom v1.8.0 MicroPython。
 """
 
 

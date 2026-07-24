@@ -1,16 +1,17 @@
-"""Track-projection geometry without camera dependencies.
+"""轨道投影几何工具，不依赖摄像头。
 
-APIs: MicroPython arithmetic only; no CanMV hardware API calls.
-Hardware: none for unit tests; coordinates originate from the K230 camera.
-Runtime: compatible with CanMV K230 Yahboom v1.8.0 MicroPython.
+API：仅使用 MicroPython 算术运算；无 CanMV 硬件调用。
+硬件：无，单元测试在 PC 运行；坐标来源于 K230 摄像头。
+运行时：兼容 CanMV K230 Yahboom v1.8.0 MicroPython。
 """
 
 
 def project_ratio(point, fixed_end, servo_end):
-    """Project a point onto directed axis A->B and return ratio t.
+    """将点投影到有向轴 A->B 上，返回比例 t。
 
-    fixed_end is Marker A and servo_end is Marker B.  t=0 is A, t=1 is B.
-    Values outside [0, 1] are retained so callers can diagnose bad detections.
+    fixed_end 是标记 A，servo_end 是标记 B。
+    t=0 代表点落在 A，t=1 代表点落在 B。
+    [0, 1] 之外的数值会原样保留，便于调用方排查异常检测。
     """
     px, py = point
     ax, ay = fixed_end
@@ -24,7 +25,7 @@ def project_ratio(point, fixed_end, servo_end):
 
 
 def normalized_track_error(point, fixed_end, servo_end, clamp=True):
-    """Map projection to -1 at A, 0 at track centre, and +1 at B."""
+    """将投影映射为 A 处 -1、轨道中心 0、B 处 +1 的归一化误差。"""
     error = 2.0 * project_ratio(point, fixed_end, servo_end) - 1.0
     if clamp:
         return max(-1.0, min(1.0, error))
@@ -32,15 +33,15 @@ def normalized_track_error(point, fixed_end, servo_end, clamp=True):
 
 
 def pixel_position_error(ball_x, target_x):
-    """Return the signed horizontal pixel error for the fixed camera.
+    """返回固定相机下的有符号水平像素误差。
 
-    Camera-right is the physical fixed end. Therefore target_x - ball_x is
-    negative toward the fixed end and positive toward the servo-driven end.
+    画面右侧是物理固定端，因此 target_x - ball_x：
+      负值 → 偏向固定端；正值 → 偏向舵机驱动端。
     """
     return int(target_x) - int(ball_x)
 
 
 def position_is_safe(ball_x, safe_left_x, safe_right_x):
-    """Return True when the detected centre lies inside the safe range."""
+    """检测圆心是否位于安全区间内。"""
     ball_x = int(ball_x)
     return int(safe_left_x) <= ball_x <= int(safe_right_x)

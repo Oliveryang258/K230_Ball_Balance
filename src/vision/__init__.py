@@ -1,2 +1,2 @@
-"""Vision algorithms and geometry helpers."""
+"""视觉算法与几何辅助工具。"""
 

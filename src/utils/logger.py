@@ -1,8 +1,8 @@
-"""Minimal logging and rate-limited debug-frame saving.
+"""极简日志与限频调试帧保存。
 
-APIs: MicroPython time.ticks_ms/ticks_diff and CanMV image.save.
-Hardware: K230 filesystem or mounted SD card.
-Runtime: CanMV K230 Yahboom v1.8.0; image saving needs device validation.
+API：MicroPython time.ticks_ms/ticks_diff 和 CanMV image.save。
+硬件：K230 文件系统或已挂载的 SD 卡。
+运行时：CanMV K230 Yahboom v1.8.0；图片保存需实机验证。
 """
 
 import time
@@ -17,7 +17,7 @@ def log_error(message):
 
 
 class DebugFrameSaver:
-    """Save annotated images no more often than the configured interval."""
+    """按配置的时间间隔限频保存带标注的调试图片。"""
 
     def __init__(self, path, interval_ms=5000, enabled=True):
         self.path = path

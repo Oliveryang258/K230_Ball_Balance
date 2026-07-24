@@ -1,2 +1,2 @@
-"""Communication adapters."""
+"""通信适配器。"""
 

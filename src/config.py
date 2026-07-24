@@ -1,8 +1,8 @@
-"""K230 runtime configuration.
+"""K230 运行配置。
 
-APIs: no hardware API calls; values configure Sensor, Display, cv_lite, and UART.
-Hardware: Yahboom K230 12Pin module.
-Runtime: CanMV K230 Yahboom v1.8.0 MicroPython.
+API：不含硬件调用；仅用于配置 Sensor、Display、cv_lite 和 UART 的参数值。
+硬件：Yahboom K230 12Pin 模块。
+运行时：CanMV K230 Yahboom v1.8.0 MicroPython。
 """
 
 # -----------------------------------------------------------------------------

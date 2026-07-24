@@ -1,22 +1,22 @@
-"""Yellow-track detector for CanMV K230 v1.8.0.
+"""CanMV K230 v1.8.0 黄色轨道检测器。
 
-Device APIs:
+设备 API：
 - cv_lite.rgb888_find_blobs()
 - CanMV Image.to_numpy_ref()
 
-Hardware: Yahboom K230 12Pin, onboard camera, yellow track.
-Runtime: CanMV K230 Yahboom v1.8.0 MicroPython.
+硬件：Yahboom K230 12Pin，板载摄像头，黄色轨道。
+运行时：CanMV K230 Yahboom v1.8.0 MicroPython。
 
-This stage deliberately does not call the four-corner rectangle detector.  The red
-axis shown on the LCD is only the long centre-line of the axis-aligned Blob bbox;
-it is useful for threshold tuning, but is not a perspective-correct track axis.
+当前阶段不调用四角点矩形检测器。LCD 上显示的红线只是
+轴对齐 Blob 外接框的长边中线，仅用于阈值调试，不是透视
+校正后的真实轨道轴线。
 """
 
 import cv_lite
 
 
 def _center_in_roi(center_x, center_y, roi):
-    """Return True when the point is inside the software ROI."""
+    """判断点是否落在软件 ROI 内。"""
     roi_x, roi_y, roi_width, roi_height = roi
     return (
         center_x >= roi_x
@@ -27,7 +27,7 @@ def _center_in_roi(center_x, center_y, roi):
 
 
 class TrackDetector:
-    """Select the largest elongated yellow connected region."""
+    """选取画面中最大且细长的黄色连通区域。"""
 
     def __init__(
         self,
@@ -39,7 +39,7 @@ class TrackDetector:
         roi,
         min_bbox_aspect_ratio,
     ):
-        # cv_lite documents image_shape as [height, width].
+        # cv_lite 文档规定 image_shape 顺序为 [高度, 宽度]。
         self.image_shape = [int(image_height), int(image_width)]
         self.rgb_threshold = list(rgb_threshold)
         self.min_area = int(min_area)
@@ -48,15 +48,15 @@ class TrackDetector:
         self.min_bbox_aspect_ratio = float(min_bbox_aspect_ratio)
 
     def capability_report(self):
-        """Report the only cv_lite capability required by this stage."""
+        """报告当前阶段唯一依赖的 cv_lite 能力。"""
         return {"rgb888_find_blobs": hasattr(cv_lite, "rgb888_find_blobs")}
 
     def _largest_yellow_blob(self, raw_blobs):
-        """Select the largest elongated candidate whose centre lies in ROI.
+        """从扁平 Blob 列表中选择 ROI 内、足够细长且外接框最大的候选。
 
-        cv_lite returns a flat sequence of [x, y, width, height] records.  The API
-        already applies min_area to connected pixels, but does not return the true
-        pixel count, so bbox area is used only to rank surviving candidates.
+        cv_lite 返回 [x, y, width, height] 扁平序列。API 已对连通像素
+        应用 min_area 过滤，但不返回真实像素数，因此仅用外接框面积
+        对存活候选排序。
         """
         best = None
         best_bbox_area = -1
@@ -92,7 +92,7 @@ class TrackDetector:
         return best
 
     def _bbox_axis(self, yellow_blob):
-        """Build a rough debug axis from the axis-aligned Blob bounding box."""
+        """从轴对齐 Blob 外接框构造粗略调试轴线。"""
         x, y, width, height = yellow_blob["bbox"]
         center_x, center_y = yellow_blob["center"]
 
@@ -124,11 +124,11 @@ class TrackDetector:
         }
 
     def detect(self, image):
-        """Process one RGB888 CanMV Image; return a result dict or None."""
+        """处理一帧 RGB888 CanMV 图像；成功返回字典，失败返回 None。"""
         if not hasattr(cv_lite, "rgb888_find_blobs"):
             raise RuntimeError("cv_lite.rgb888_find_blobs is missing")
 
-        # to_numpy_ref() passes a reference instead of copying the full frame.
+        # to_numpy_ref() 传递引用，不拷贝整帧图像。
         image_array = image.to_numpy_ref()
         raw_blobs = cv_lite.rgb888_find_blobs(
             self.image_shape,
