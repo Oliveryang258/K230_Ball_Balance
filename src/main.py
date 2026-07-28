@@ -375,7 +375,7 @@ def _draw_status(image, result, fps, grayscale):
             )
         image.draw_line(
             config.BALL_TARGET_X, 0,
-            config.BALL_TARGET_X, config.CAMERA_HEIGHT - 1,
+            config.BALL_TARGET_X, image.height() - 1,
             color=reference_color, thickness=1,
         )
         if TUNE_DISPLAY_FPS:
