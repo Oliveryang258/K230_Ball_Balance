@@ -34,10 +34,7 @@ K230_Ball_Balance/
 │   ├── Core/                     # CubeMX 生成的核心代码 + main.c
 │   ├── Drivers/                  # HAL 库
 │   └── MDK-ARM/                  # Keil MDK-ARM V5 工程文件
-├── tests/pc/                     # PC 端纯逻辑测试（不需要硬件）
-│   ├── test_ball_detector.py     # 检测器候选选择逻辑测试
-│   ├── test_ball_controller.c    # PD 控制器单元测试
-│   └── test_vision_protocol.c    # V1 协议编解码测试
+
 ├── tools/                        # PC 端辅助工具
 │   └── mechanical_model.py       # 机械建模与标定（NumPy/pandas/matplotlib）
 ├── data/                         # 标定数据模板
@@ -102,12 +99,6 @@ DS215MG 舵机 → 连杆 → 轨道角度 → 钢球位置
 2. 编译，下载到 STM32F103C8T6
 3. 接线：K230 IO9 → STM32 PA10，共地，不接 VCC
 4. Keil Watch 中添加 `g_dbg` 观察运行状态
-
-### PC 端测试
-
-```powershell
-python -m unittest discover -s tests/pc -p "test_*.py"
-```
 
 ## K230↔STM32 接线
 

@@ -32,7 +32,6 @@ K230_Ball_Balance/
 │   ├── communication/
 │   ├── control/
 │   └── utils/
-├── tests/pc/
 ├── logs/
 ├── AGENTS.md
 ├── README.md
@@ -63,18 +62,7 @@ R:xx
 5. 只需打开`main.py`，调整顶部的`TUNE_BALL_*`现场参数。
 6. 把成功或失败的 API 现象记录到 `docs/verified-api-notes.md`。
 
-设备端不需要额外安装 Python 包。不要把仓库的 `tests/`、`docs/` 或 `.agents/` 上传为运行代码。
-
-## 电脑 A 检查
-
-电脑 A 只能运行纯逻辑测试，不能导入 `media.*` 或 `cv_lite`：
-
-```powershell
-python -m unittest discover -s tests/pc -p "test_*.py"
-python -m compileall -q src tests/pc
-```
-
-上述成功不代表 CanMV v1.8.0 上板兼容。
+设备端不需要额外安装 Python 包。不要把 `docs/` 或 `.agents/` 上传为运行代码。
 
 ## 开发路线
 
