@@ -36,3 +36,6 @@ stm32_ball_controller/MDK-ARM/*.lst
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local archives
+*.zip
