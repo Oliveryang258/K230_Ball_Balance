@@ -39,15 +39,6 @@ K230_Ball_Balance/
 │   └── mechanical_model.py       # 机械建模与标定（NumPy/pandas/matplotlib）
 ├── data/                         # 标定数据模板
 │   └── servo_rail_calibration.csv
-├── docs/                         # 文档
-│   ├── README.md                 # 开发与部署说明
-│   ├── control_architecture.md   # 控制架构、PD公式、Guard定义、Keil Watch说明
-│   ├── verified-api-notes.md     # CanMV v1.8.0 API 实机验证记录
-│   ├── mechanical_model.md       # 机械结构假设与标定计划
-│   ├── ball-static-test.md       # 钢球静态上板测试指南
-│   └── track-static-test.md      # 黄色轨道测试指南（旧阶段）
-├── logs/                         # 运行日志
-├── AGENTS.md                     # 项目长期规则
 └── .gitignore
 ```
 
