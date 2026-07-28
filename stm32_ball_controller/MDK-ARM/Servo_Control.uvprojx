@@ -626,6 +626,16 @@
               <FileType>1</FileType>
               <FilePath>..\App\Src\ball_controller.c</FilePath>
             </File>
+            <File>
+              <FileName>telemetry_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\telemetry_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_telemetry_tx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\app_telemetry_tx.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

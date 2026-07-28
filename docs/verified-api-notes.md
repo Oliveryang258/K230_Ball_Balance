@@ -117,20 +117,71 @@ FPS/异常：
 - These values are PC-logic tested only. They must not be marked verified until
   free-rolling and vibration tests are observed on the physical K230.
 
-## Pending ROI-only Hough-circle validation
+## 2026-07-24 ROI-copy performance result and rollback
 
 - `cv_lite.rgb888_find_circles()` has no ROI argument in its documented
   signature.
-- The detector now uses the documented CanMV `Image.copy(roi)` operation to
-  create a compact RGB888 track image before calling cv_lite.
-- With the current `(10,205,620,90)` ROI, the Hough input is reduced from
-  `640x480` (307,200 pixels) to `620x90` (55,800 pixels), about 18.2% of the
-  previous search area.
-- Local circle centres are translated back to the original 640x480 coordinate
-  system, so `BALL_TARGET_X`, safety limits, LCD overlays, and the UART protocol
-  do not change.
-- `Image.copy(roi)` on RGB888 and the resulting FPS/memory behavior are
-  documentation-backed but not yet verified on the Yahboom v1.8.0 device.
+- A trial implementation used `Image.copy(roi)` before every Hough-circle call.
+- On the physical Yahboom K230 v1.8.0 device, that implementation reduced the
+  observed frame rate to about `3-4 FPS`, so it is not suitable for this loop.
+- The detector has therefore returned to the previously successful path:
+  `Image.to_numpy_ref()` on the full `640x480` frame, followed by ROI filtering
+  of the returned circle centres.
+- This rollback keeps all output coordinates, target position, safety limits,
+  overlays, and protocol fields in the original `640x480` coordinate system.
+
+## 2026-07-24 grayscale circle A/B test
+
+- The current official cv_lite manual documents
+  `cv_lite.grayscale_find_circles()` with the same circle-result layout
+  `[x, y, r, ...]` as the verified RGB888 function.
+- The manual requires the Sensor to output grayscale data. The trial therefore
+  uses `Sensor.GRAYSCALE` directly and does not convert RGB888 frames in Python.
+- Full-frame `Image.to_numpy_ref()` and result-stage ROI filtering are retained;
+  the rejected per-frame `Image.copy(roi)` path is not reintroduced.
+- The grayscale path ran successfully on the physical Yahboom v1.8.0 device.
+  With the same scene and circle parameters it increased the observed frame rate
+  by about `1.5 FPS` over the restored full-frame RGB888 path.
+- This confirms that `Sensor.GRAYSCALE` and `grayscale_find_circles()` are
+  usable for detection. A first overlay attempt appeared to make the physical
+  LCD flash briefly and then go black.
+- Code inspection then found a deterministic runtime bug in that overlay:
+  `_draw_status()` accessed `result["center"]` before checking whether
+  `result is None`. The first missed detection therefore raised an exception,
+  after which the program's `finally` block called `Display.deinit()`.
+- The replacement minimal overlay checks invalid results first, draws directly
+  on the grayscale frame, and keeps only FPS text plus the current ball box.
+  Direct grayscale drawing and grayscale `Display.show_image()` remain pending
+  physical-device validation.
+
+## Pending 2026-07-24 offline LCD integration retest
+
+- The Yahboom-provided `04.find_line.py` displays correctly on the physical LCD
+  when run offline using `Display.init(Display.ST7701, to_ide=True)` and
+  `Display.show_image(img)` without explicit display dimensions or offsets.
+- The project previously forced an `800x480` display layer and centred its
+  `640x480` frame at `x=80`; that version was visible in the IDE but not on the
+  offline LCD.
+- The integrated program now follows the verified Yahboom initialization and
+  display-call form. Offline operation with the grayscale/UART pipeline still
+  requires a physical-device retest before this specific fix is marked verified.
+
+## 2026-07-26 grayscale crop-size alignment observation
+
+- On the current Yahboom v1.8.0 device, grayscale crop/display heights `176`
+  and `128` produced a normal image, while height `150` produced severe vertical
+  stripe corruption instead of a geometrically cropped camera image.
+- Official K230 display examples explicitly align display width to 16 pixels,
+  but the reviewed documentation does not state the same rule for height.
+- The runtime therefore conservatively aligns both requested crop width and
+  height downward to a multiple of 16 before calling `Image.crop()` and
+  `Display.show_image()`. This is a project workaround inferred from the
+  observed device behavior, not yet a confirmed firmware-wide API requirement.
+- A physical retest with requested height `150` (actual aligned height `144`)
+  is still required.
+- A later test used requested height `106`, which the runtime aligned to `96`;
+  the resulting grayscale crop/display image was normal and covered the desired
+  rail band.
 
 ## 2026-07-21 Yahboom 12Pin UART pin inspection
 

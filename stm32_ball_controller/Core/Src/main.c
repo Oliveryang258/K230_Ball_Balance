@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app_uart_rx.h"
+#include "app_telemetry_tx.h"
 #include "app_config.h"
 #include "ball_controller.h"
 #include "control_guard.h"
@@ -59,42 +60,65 @@ VisionMeasurement g_measurement = {0};
  * 以下变量带 volatile，方便在 Keil Watch 窗口实时观察。
  * volatile 也避免编译器因为程序暂时没有使用这些值而将它们优化掉。
  */
-volatile ControlGuardState g_guard_state = CONTROL_GUARD_LINK_TIMEOUT;
+volatile ControlGuardState g_guard_state = CONTROL_GUARD_UART_TIMEOUT;
 volatile uint8_t g_uart_rx_started = 0U;
 volatile uint32_t g_uart_valid_packet_count = 0U;
 volatile uint32_t g_uart_error_count = 0U;
+volatile uint32_t g_protocol_error_count = 0U;
+volatile uint8_t g_telemetry_tx_started = 0U;
+volatile uint32_t g_telemetry_sent_count = 0U;
+volatile uint32_t g_telemetry_overwrite_count = 0U;
+volatile uint32_t g_telemetry_error_count = 0U;
+volatile uint8_t g_control_runtime_started = 0U;
+volatile uint32_t g_control_tick_count = 0U;
 
 /*
  * 舵机台架调试变量：默认关闭手动测试，默认目标取自配置文件中的暂定中位。
  * 使用 Watch 手动测试前必须取下钢球，并确认连杆没有顶死或明显预紧。
  */
 volatile uint8_t g_servo_pwm_started = 0U;
-volatile uint8_t g_servo_manual_test_enabled = 0U;
-volatile uint16_t g_servo_manual_target_us = SERVO_PWM_NEUTRAL_US;
-volatile uint16_t g_servo_current_pulse_us = SERVO_PWM_NEUTRAL_US;
-volatile uint16_t g_servo_target_pulse_us = SERVO_PWM_NEUTRAL_US;
+volatile uint8_t g_manual = 0U;
+volatile uint16_t g_manual_us = SERVO_PWM_NEUTRAL_US;
 
 /*
- * 自动控制采用“两级开关”，上电时两级都为 0：
- * enabled 只允许计算，apply_output 才允许实际驱动舵机。
- * 这样可以先在 Watch 中检查方向、增益和限幅，再接通闭环输出。
+ * 位置PID在guard为READY时固定以50 Hz计算；g_apply只负责是否应用输出。
+ * 无论g_apply状态如何，ControlGuard失败都会强制回中位。
  */
 BallController g_ball_controller;
-volatile uint8_t g_ball_control_enabled = 0U;
-volatile uint8_t g_ball_control_apply_output = 0U;
-volatile float g_ball_control_kp_us_per_px = 0.0f;
-volatile float g_ball_control_kv_us_per_px_s = 0.0f;
-volatile int8_t g_ball_control_direction = 1;
 
-/* 以下是 Watch 只读观察量，不应手动改写。 */
-volatile uint8_t g_ball_control_updated = 0U;
-volatile uint8_t g_ball_control_saturated = 0U;
-volatile int16_t g_ball_control_error_px = 0;
-volatile float g_ball_control_velocity_px_s = 0.0f;
-volatile float g_ball_control_p_term_us = 0.0f;
-volatile float g_ball_control_d_term_us = 0.0f;
-volatile float g_ball_control_offset_us = 0.0f;
-volatile uint16_t g_ball_control_computed_target_us = SERVO_PWM_NEUTRAL_US;
+/*
+ * Keil Watch可直接修改的短变量。
+ * 调参时只需要添加g_kp、g_ki、g_kv、g_dir和g_apply。
+ */
+volatile uint8_t g_apply = BALL_CONTROL_DEFAULT_APPLY_OUTPUT;
+volatile float g_kp = BALL_CONTROL_DEFAULT_KP_US_PER_PX;
+volatile float g_ki = BALL_CONTROL_DEFAULT_KI_US_PER_PX_S;
+volatile float g_kv = BALL_CONTROL_DEFAULT_KV_US_PER_PX_S;
+volatile int8_t g_dir = BALL_CONTROL_DEFAULT_DIRECTION;
+
+/*
+ * Keil Watch只读调试结构体。
+ * Watch中只添加g_dbg并展开，即可一次看到测量、控制和PWM状态。
+ */
+typedef struct
+{
+    uint32_t tick;          /* 20 ms控制任务累计执行次数 */
+    uint8_t guard;          /* 当前保护状态，0～5 */
+    uint8_t meas_status;    /* 0接受、1重复、2无效、3 dt异常、255无新帧 */
+    int16_t x;              /* 最近钢球横坐标 */
+    int16_t err;            /* 位置误差，单位px */
+    float vel;              /* 滤波速度，单位px/s */
+    float p;                /* P项，单位us */
+    float i;                /* 位置I项，单位us */
+    float d;                /* D项，单位us */
+    float out;              /* 方向处理后的控制偏移，单位us */
+    uint8_t i_reset_reason; /* 最近一次I清零原因，粘滞保存 */
+    uint32_t i_reset_count; /* I从非零变为零的累计次数 */
+    uint16_t pwm_target;    /* 舵机模块当前目标脉宽 */
+    uint16_t pwm_now;       /* 当前实际写入CCR的脉宽 */
+} ControlDebug;
+
+volatile ControlDebug g_dbg = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -113,9 +137,253 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     AppUartRx_OnRxComplete(huart);
 }
 
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    AppTelemetryTx_OnTxComplete(huart);
+}
+
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+    AppTelemetryTx_OnError(huart);
     AppUartRx_OnError(huart);
+}
+
+static int16_t Telemetry_RoundFloatToI16(float value)
+{
+    if (value >= 32767.0f)
+    {
+        return 32767;
+    }
+    if (value <= -32768.0f)
+    {
+        return -32768;
+    }
+    if (value >= 0.0f)
+    {
+        return (int16_t)(value + 0.5f);
+    }
+    return (int16_t)(value - 0.5f);
+}
+
+/*
+ * I清零原因采用粘滞记录，避免Keil Watch漏掉仅持续一个20 ms周期的guard。
+ * 1 UART超时，2丢球，3位置越界，4 dt异常，5协议/UART错误，6 Ki被设为0。
+ */
+static void Debug_RecordIntegralReset(uint8_t reason)
+{
+    g_dbg.i_reset_reason = reason;
+    g_dbg.i_reset_count++;
+}
+
+/*
+ * 固定1 ms入口、20 ms执行一次的控制任务。
+ * USART ISR只发布数据；本函数先做一致性快照，再在中断保持开启的情况下
+ * 完成guard、速度估计、位置PID和舵机slew目标更新。
+ */
+void AppControl_On1msTick(void)
+{
+    static uint16_t control_divider_ms = 0U;
+    static uint32_t previous_protocol_error_count = 0U;
+    static uint32_t previous_uart_error_count = 0U;
+    AppUartRxSnapshot rx_snapshot;
+    BallMeasurementResult measurement_result = BALL_MEAS_INVALID;
+    bool protocol_error_event;
+    bool invalid_dt_event = false;
+    bool control_ran = false;
+    float integral_before_measurement;
+    float integral_before_control;
+    uint32_t now_ms;
+    TelemetrySample telemetry_sample;
+
+    if (g_control_runtime_started == 0U)
+    {
+        control_divider_ms = 0U;
+        return;
+    }
+
+    control_divider_ms++;
+    if (control_divider_ms < BALL_CONTROL_PERIOD_MS)
+    {
+        return;
+    }
+    control_divider_ms = 0U;
+    g_control_tick_count++;
+    now_ms = HAL_GetTick();
+
+    /*
+     * TakeSnapshot仅在复制共享字段期间短暂关闭中断。
+     * 返回后多字段测量和它的接收tick属于同一发布版本。
+     */
+    (void)AppUartRx_TakeSnapshot(&rx_snapshot);
+    g_measurement = rx_snapshot.measurement;
+
+    protocol_error_event =
+        (rx_snapshot.protocol_error_count != previous_protocol_error_count) ||
+        (rx_snapshot.uart_error_count != previous_uart_error_count);
+    previous_protocol_error_count = rx_snapshot.protocol_error_count;
+    previous_uart_error_count = rx_snapshot.uart_error_count;
+
+    g_dbg.meas_status = 255U;
+
+    g_guard_state = ControlGuard_Evaluate(
+        &g_measurement,
+        rx_snapshot.has_packet,
+        rx_snapshot.last_packet_tick,
+        now_ms,
+        protocol_error_event,
+        false
+    );
+
+    if ((g_guard_state == CONTROL_GUARD_READY) &&
+        rx_snapshot.new_packet)
+    {
+        /*
+         * dt来自50 Hz控制任务先后消费的两个最新有效测量在STM32上的
+         * 真实接收tick。K230发送快于控制周期时允许跳过中间frame_id，
+         * 但绝不使用固定20 ms伪造测量dt；重复frame_id也不会更新速度。
+         * 异常dt会清空差分历史并丢弃本帧。
+         */
+        integral_before_measurement = g_ball_controller.i_term_us;
+        measurement_result = BallController_AcceptMeasurementEx(
+            &g_ball_controller,
+            &g_measurement,
+            rx_snapshot.last_packet_tick
+        );
+        g_dbg.meas_status = (uint8_t)measurement_result;
+        invalid_dt_event =
+            (measurement_result == BALL_MEAS_INVALID_DT);
+
+        if (invalid_dt_event)
+        {
+            if (integral_before_measurement != 0.0f)
+            {
+                Debug_RecordIntegralReset(4U);
+            }
+            g_guard_state = CONTROL_GUARD_INVALID_DT;
+        }
+    }
+
+    /*
+     * 没有新帧但尚未超时：仍以50 Hz使用最近有效状态计算P、D并维持输出。
+     * I项只在AcceptMeasurement接受新帧后按真实dt更新，不会对旧帧重复积分。
+     */
+    if (g_guard_state == CONTROL_GUARD_READY)
+    {
+        integral_before_control = g_ball_controller.i_term_us;
+        control_ran = BallController_StepPid(
+            &g_ball_controller,
+            g_kp,
+            g_ki,
+            g_kv,
+            g_dir
+        ) ? 1U : 0U;
+
+        if ((integral_before_control != 0.0f) &&
+            (g_ball_controller.i_term_us == 0.0f) &&
+            (g_ki <= 0.0f))
+        {
+            Debug_RecordIntegralReset(6U);
+        }
+    }
+    else
+    {
+        if (g_ball_controller.i_term_us != 0.0f)
+        {
+            /*
+             * guard枚举0～4分别加1，映射为诊断原因1～5。
+             * invalid dt已在测量处理处记录，内部Reset后I已经为0，不会重复计数。
+             */
+            Debug_RecordIntegralReset((uint8_t)g_guard_state + 1U);
+        }
+        BallController_Reset(&g_ball_controller);
+    }
+
+    if (g_manual != 0U)
+    {
+        ServoOutput_SetTargetPulseUs(g_manual_us);
+    }
+    else if ((g_guard_state == CONTROL_GUARD_READY) &&
+             (g_apply != 0U) &&
+             control_ran)
+    {
+        ServoOutput_SetTargetPulseUs(
+            BallController_GetTargetPulseUs(&g_ball_controller)
+        );
+    }
+    else
+    {
+        ServoOutput_SetNeutral();
+    }
+
+    g_dbg.tick = g_control_tick_count;
+    g_dbg.guard = (uint8_t)g_guard_state;
+    g_dbg.x = g_measurement.ball_x;
+    g_dbg.err = g_ball_controller.error_px;
+    g_dbg.vel = g_ball_controller.velocity_px_s;
+    g_dbg.p = g_ball_controller.p_term_us;
+    g_dbg.i = g_ball_controller.i_term_us;
+    g_dbg.d = g_ball_controller.d_term_us;
+    g_dbg.out = g_ball_controller.control_offset_us;
+    g_dbg.pwm_target = ServoOutput_GetTargetPulseUs();
+    g_dbg.pwm_now = ServoOutput_GetCurrentPulseUs();
+
+    /*
+     * The 50 Hz control ISR only publishes a snapshot. The main loop starts
+     * the non-blocking UART transfer, so telemetry can never wait inside the
+     * control path.
+     */
+    telemetry_sample.tick_ms = now_ms;
+    telemetry_sample.vision_frame_id = g_measurement.frame_id;
+    telemetry_sample.ball_x = g_measurement.ball_x;
+    telemetry_sample.error_px = g_measurement.error_px;
+    telemetry_sample.velocity_px_s =
+        Telemetry_RoundFloatToI16(g_ball_controller.velocity_px_s);
+    telemetry_sample.p_term_us =
+        Telemetry_RoundFloatToI16(g_ball_controller.p_term_us);
+    telemetry_sample.i_term_us =
+        Telemetry_RoundFloatToI16(g_ball_controller.i_term_us);
+    telemetry_sample.d_term_us =
+        Telemetry_RoundFloatToI16(g_ball_controller.d_term_us);
+    telemetry_sample.control_offset_us =
+        Telemetry_RoundFloatToI16(g_ball_controller.control_offset_us);
+    telemetry_sample.servo_target_us = g_dbg.pwm_target;
+    telemetry_sample.servo_current_us = g_dbg.pwm_now;
+    telemetry_sample.guard_state = (uint8_t)g_guard_state;
+    telemetry_sample.measurement_status = g_dbg.meas_status;
+    telemetry_sample.flags = 0U;
+    if (g_apply != 0U)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_APPLY_OUTPUT;
+    }
+    if (g_manual != 0U)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_MANUAL_MODE;
+    }
+    if (g_measurement.ball_valid)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_BALL_VALID;
+    }
+    if (g_measurement.ball_safe)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_BALL_SAFE;
+    }
+    if (control_ran)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_CONTROL_RAN;
+    }
+    if (g_ball_controller.saturated)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_OUTPUT_SATURATED;
+    }
+    if (g_servo_pwm_started != 0U)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_SERVO_STARTED;
+    }
+    if (rx_snapshot.new_packet)
+    {
+        telemetry_sample.flags |= TELEMETRY_FLAG_NEW_VISION_PACKET;
+    }
+    AppTelemetryTx_Publish(&telemetry_sample);
 }
 /* USER CODE END 0 */
 
@@ -127,8 +395,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  bool new_measurement;
-  uint32_t now_ms;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -154,7 +420,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
 	/*
 	 * 启动 USART1 单字节中断接收。
-	 * 当前即使没有连接 K230，也应当能够成功启动接收并保持 LINK_TIMEOUT。
+	 * 当前即使没有连接 K230，也应当能够成功启动接收并保持 UART_TIMEOUT。
 	 */
 	if (!AppUartRx_Init(&huart1))
 	{
@@ -162,6 +428,10 @@ int main(void)
 		Error_Handler();
 	}
 	g_uart_rx_started = 1U;
+	if (AppTelemetryTx_Init(&huart1))
+	{
+		g_telemetry_tx_started = 1U;
+	}
 
 	/*
 	 * 先写入配置文件中的暂定中位，再启动 TIM2_CH1 硬件PWM。
@@ -173,6 +443,7 @@ int main(void)
 	}
 	g_servo_pwm_started = 1U;
 	BallController_Init(&g_ball_controller);
+	g_control_runtime_started = 1U;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -182,87 +453,18 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-		now_ms = HAL_GetTick();
-		new_measurement = AppUartRx_GetLatest(&g_measurement);
-		if (new_measurement)
-		{
-				/* 收到一帧格式、版本、校验都正确的新数据。 */
-		}
-
-		g_guard_state = ControlGuard_Evaluate(
-				&g_measurement,
-				AppUartRx_HasPacket(),
-				AppUartRx_GetLastPacketTick(),
-				now_ms
-		);
-
 		/*
 		 * 将接收统计量镜像到全局变量，便于不接串口线时在 Watch 中观察。
 		 * 没有 K230 连线时，两个计数都应保持为 0。
 		 */
 		g_uart_valid_packet_count = AppUartRx_GetValidPacketCount();
 		g_uart_error_count = AppUartRx_GetUartErrorCount();
-
-		/*
-		 * 只有 Guard READY 且计算开关打开时才处理新帧。
-		 * Guard 一旦失败就清除速度历史，避免恢复通信后产生速度尖峰。
-		 */
-		g_ball_control_updated = 0U;
-		if ((g_guard_state == CONTROL_GUARD_READY) &&
-		    (g_ball_control_enabled != 0U))
-		{
-			if (new_measurement)
-			{
-				g_ball_control_updated = BallController_Update(
-					&g_ball_controller,
-					&g_measurement,
-					now_ms,
-					g_ball_control_kp_us_per_px,
-					g_ball_control_kv_us_per_px_s,
-					g_ball_control_direction
-				) ? 1U : 0U;
-			}
-		}
-		else
-		{
-			BallController_Reset(&g_ball_controller);
-		}
-
-		/*
-		 * 默认永远回到中位。只有显式打开台架测试开关后，才接受 Watch 中
-		 * 的手动目标；servo_output 内部还会按照配置文件执行强制限幅。
-		 */
-		if (g_servo_manual_test_enabled != 0U)
-		{
-			ServoOutput_SetTargetPulseUs(g_servo_manual_target_us);
-		}
-		else if ((g_guard_state == CONTROL_GUARD_READY) &&
-		         (g_ball_control_enabled != 0U) &&
-		         (g_ball_control_apply_output != 0U))
-		{
-			ServoOutput_SetTargetPulseUs(
-				BallController_GetTargetPulseUs(&g_ball_controller)
-			);
-		}
-		else
-		{
-			ServoOutput_SetNeutral();
-		}
-		ServoOutput_Process(now_ms);
-
-		/* 将模块内部状态镜像到全局变量，方便在 Keil Watch 中观察。 */
-		g_servo_current_pulse_us = ServoOutput_GetCurrentPulseUs();
-		g_servo_target_pulse_us = ServoOutput_GetTargetPulseUs();
-
-		/* 把 PD 内部量镜像到全局变量，方便在 Keil Watch 中连续观察。 */
-		g_ball_control_saturated = g_ball_controller.saturated ? 1U : 0U;
-		g_ball_control_error_px = g_ball_controller.error_px;
-		g_ball_control_velocity_px_s = g_ball_controller.velocity_px_s;
-		g_ball_control_p_term_us = g_ball_controller.p_term_us;
-		g_ball_control_d_term_us = g_ball_controller.d_term_us;
-		g_ball_control_offset_us = g_ball_controller.control_offset_us;
-		g_ball_control_computed_target_us =
-			BallController_GetTargetPulseUs(&g_ball_controller);
+		g_protocol_error_count = AppUartRx_GetProtocolErrorCount();
+		AppTelemetryTx_Poll();
+		g_telemetry_sent_count = AppTelemetryTx_GetSentCount();
+		g_telemetry_overwrite_count =
+			AppTelemetryTx_GetOverwriteCount();
+		g_telemetry_error_count = AppTelemetryTx_GetErrorCount();
 
 		/*
 		 * 现在只在 Keil Watch 窗口观察 g_guard_state 和 g_measurement。

@@ -57,26 +57,32 @@ int main(void)
     assert(measurement.ball_valid);
     assert(measurement.ball_safe);
 
-    assert(ControlGuard_Evaluate(&measurement, false, 0U, 0U)
-           == CONTROL_GUARD_LINK_TIMEOUT);
-    assert(ControlGuard_Evaluate(&measurement, true, 100U, 251U)
-           == CONTROL_GUARD_LINK_TIMEOUT);
-    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U)
+    assert(ControlGuard_Evaluate(&measurement, false, 0U, 0U, false, false)
+           == CONTROL_GUARD_UART_TIMEOUT);
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 251U, false, false)
+           == CONTROL_GUARD_UART_TIMEOUT);
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U, false, false)
            == CONTROL_GUARD_READY);
 
     measurement.ball_valid = false;
-    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U)
-           == CONTROL_GUARD_VISION_INVALID);
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U, false, false)
+           == CONTROL_GUARD_BALL_LOST);
 
     measurement.ball_valid = true;
     measurement.ball_safe = false;
-    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U)
-           == CONTROL_GUARD_BALL_UNSAFE);
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U, false, false)
+           == CONTROL_GUARD_POSITION_OUT_OF_RANGE);
 
     measurement.ball_safe = true;
     measurement.ball_x = 59;
-    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U)
-           == CONTROL_GUARD_BALL_UNSAFE);
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U, false, false)
+           == CONTROL_GUARD_POSITION_OUT_OF_RANGE);
+
+    measurement.ball_x = 484;
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U, true, false)
+           == CONTROL_GUARD_PROTOCOL_ERROR);
+    assert(ControlGuard_Evaluate(&measurement, true, 100U, 200U, false, true)
+           == CONTROL_GUARD_INVALID_DT);
 
     /* 校验和损坏后不能输出新测量。 */
     VisionParser_Init(&parser);
@@ -88,7 +94,26 @@ int main(void)
     }
     assert(!complete);
 
+    VisionParser_Init(&parser);
+    make_packet(
+        packet,
+        VISION_FLAG_VALID | VISION_FLAG_SAFE,
+        514U,
+        0,
+        351
+    );
+    packet[10] ^= 0x01U;
+    for (i = 0U; i < (VISION_PACKET_SIZE - 1U); ++i)
+    {
+        assert(VisionParser_PushByteEx(&parser, packet[i], &measurement)
+               == VISION_PARSE_INCOMPLETE);
+    }
+    assert(VisionParser_PushByteEx(
+               &parser,
+               packet[VISION_PACKET_SIZE - 1U],
+               &measurement)
+           == VISION_PARSE_BAD_CHECKSUM);
+
     puts("vision_protocol_tests: PASS");
     return 0;
 }
-

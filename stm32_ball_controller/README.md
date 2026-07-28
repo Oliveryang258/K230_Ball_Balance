@@ -114,19 +114,23 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 在 `while (1)` 中只读取状态，暂时不控制舵机：
 
 ```c
+AppUartRxSnapshot rx_snapshot;
 VisionMeasurement measurement = {0};
 ControlGuardState guard_state;
 
-if (AppUartRx_GetLatest(&measurement))
+if (AppUartRx_TakeSnapshot(&rx_snapshot))
 {
+    measurement = rx_snapshot.measurement;
     /* 这里表示收到一帧新的、格式和校验均正确的数据。 */
 }
 
 guard_state = ControlGuard_Evaluate(
     &measurement,
-    AppUartRx_HasPacket(),
-    AppUartRx_GetLastPacketTick(),
-    HAL_GetTick()
+    rx_snapshot.has_packet,
+    rx_snapshot.last_packet_tick,
+    HAL_GetTick(),
+    false,
+    false
 );
 
 /*
@@ -142,7 +146,7 @@ guard_state = ControlGuard_Evaluate(
 1. CubeMX 正常生成工程；
 2. Keil 无错误编译；
 3. 下载空框架到 STM32 后能够进入 `while (1)`；
-4. Watch 中看到 `guard_state` 一直为 `CONTROL_GUARD_LINK_TIMEOUT`；
+4. Watch 中看到 `guard_state` 一直为 `CONTROL_GUARD_UART_TIMEOUT`；
 5. 确认没有任何舵机 PWM 输出。
 
 等连线到位后，再验证 UART 接收并记录实测结果。

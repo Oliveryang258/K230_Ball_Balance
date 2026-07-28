@@ -28,7 +28,7 @@ void VisionParser_Init(VisionParser *parser)
     parser->index = 0U;
 }
 
-bool VisionParser_PushByte(
+VisionParseResult VisionParser_PushByteEx(
     VisionParser *parser,
     uint8_t byte,
     VisionMeasurement *output)
@@ -38,7 +38,7 @@ bool VisionParser_PushByte(
 
     if ((parser == 0) || (output == 0))
     {
-        return false;
+        return VISION_PARSE_INCOMPLETE;
     }
 
     /*
@@ -52,7 +52,7 @@ bool VisionParser_PushByte(
             parser->buffer[0] = byte;
             parser->index = 1U;
         }
-        return false;
+        return VISION_PARSE_INCOMPLETE;
     }
 
     /*
@@ -75,7 +75,7 @@ bool VisionParser_PushByte(
         {
             parser->index = 0U;
         }
-        return false;
+        return VISION_PARSE_INCOMPLETE;
     }
 
     parser->buffer[parser->index] = byte;
@@ -83,7 +83,7 @@ bool VisionParser_PushByte(
 
     if (parser->index < VISION_PACKET_SIZE)
     {
-        return false;
+        return VISION_PARSE_INCOMPLETE;
     }
 
     /* 本帧已经收满；无论成功失败，下一字节都重新搜索帧头。 */
@@ -91,13 +91,13 @@ bool VisionParser_PushByte(
 
     if (parser->buffer[2] != VISION_PACKET_VERSION)
     {
-        return false;
+        return VISION_PARSE_BAD_VERSION;
     }
 
     expected_checksum = VisionProtocol_Checksum(&parser->buffer[2], 8U);
     if (expected_checksum != parser->buffer[10])
     {
-        return false;
+        return VISION_PARSE_BAD_CHECKSUM;
     }
 
     flags = parser->buffer[3];
@@ -108,6 +108,14 @@ bool VisionParser_PushByte(
     output->error_px = read_i16_le(&parser->buffer[6]);
     output->ball_x = read_i16_le(&parser->buffer[8]);
 
-    return true;
+    return VISION_PARSE_VALID;
 }
 
+bool VisionParser_PushByte(
+    VisionParser *parser,
+    uint8_t byte,
+    VisionMeasurement *output)
+{
+    return VisionParser_PushByteEx(parser, byte, output) ==
+           VISION_PARSE_VALID;
+}

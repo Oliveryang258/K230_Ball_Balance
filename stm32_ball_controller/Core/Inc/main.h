@@ -55,6 +55,11 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+/*
+ * 由1 ms SysTick中断调用；内部每BALL_CONTROL_PERIOD_MS执行一次控制任务。
+ * UART字节解析仍由USART1中断完成，TIM2继续自动产生333 Hz PWM。
+ */
+void AppControl_On1msTick(void);
 
 /* USER CODE END EFP */
 

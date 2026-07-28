@@ -4,17 +4,17 @@
 目标：在当前固定相机、约20 cm可见轨道范围内，验证钢球检测和位置输出。
 
 处理流程：
-    Sensor RGB888采集 -> cv_lite霍夫圆检测 -> ROI/半径过滤
+    Sensor灰度/RGB888采集 -> 对应的cv_lite霍夫圆检测 -> ROI/半径过滤
     -> 钢球中心 -> 相对物理中心的整数像素误差 -> LCD和控制台调试
 
-本阶段启用K230到STM32的单向UART视觉测量，但仍不启用PID和舵机闭环。
+本阶段启用K230到STM32的单向UART视觉测量；PID和舵机闭环由STM32负责。
 当前相机右侧对应固定端，error_px为负；相机左侧对应舵机端，error_px为正。
 
 使用的CanMV API：media.sensor.Sensor、media.display.Display、
-media.media.MediaManager、cv_lite.rgb888_find_circles()、CanMV Image绘图接口、
+media.media.MediaManager、cv_lite灰度/RGB888圆检测、CanMV Image绘图接口、
 machine.FPIOA和machine.UART。
 硬件：Yahboom K230 12Pin、板载摄像头/LCD、浅色轨道、钢球。
-运行时：CanMV K230 Yahboom v1.8.0 
+运行时：CanMV K230 Yahboom v1.8.0
 """
 
 import gc
@@ -38,9 +38,42 @@ from vision.geometry import pixel_position_error, position_is_safe
 # =============================================================================
 FIELD_TUNING_ENABLED = True
 
-# 蓝框必须包住钢球可运动区域，但尽量不要包住绿色底板和两端黑色机构。
-# 格式：(x, y, width, height)，坐标以640x480原始图像为准。
-TUNE_BALL_ROI = (10, 205, 620, 90)
+# 新支架全画面标定开关。
+#
+# True：关闭裁剪和UART，在完整VGA画面中搜索钢球并显示坐标参考线。
+# False：使用下面的新支架裁剪参数进入视觉复测。
+CALIBRATION_MODE = False
+
+# 灰度检测比RGB888约快1.5 FPS。当前直接在灰度帧上绘制灰度标记，
+# 不再先把灰度帧转换成RGB565。
+TUNE_GRAYSCALE_ENABLED = True
+
+# 当前相机高度下的近水平球心约为：
+# 左视野边缘(22,308)、机械中点(322,312)、右视野边缘(624,312)。
+#
+# 傻瓜裁剪接口：只修改WIDTH和HEIGHT。
+# 程序始终围绕实测轨道中心(322,312)自动计算裁剪起点，并自动生成ROI。
+# 为避免K230裁剪/显示缓冲条纹，输入值会自动向下对齐到16的倍数。
+# 例如WIDTH填600会实际使用592；HEIGHT填150会实际使用144。
+TUNE_CROP_ENABLED = True
+TUNE_VIEW_CENTER_X = 322
+TUNE_VIEW_CENTER_Y = 312
+TUNE_VIEW_WIDTH = 640
+TUNE_VIEW_HEIGHT = 106
+TUNE_VIEW_ALIGNMENT = 16
+
+# 检测ROI默认等于整个自动裁剪画面，不需要跟着WIDTH/HEIGHT修改。
+TUNE_ROI_MARGIN_X = 0
+TUNE_ROI_MARGIN_Y = 0
+
+# 当前视觉ROI复测完成，启用K230 UART1向STM32发送视觉测量。
+TUNE_UART_ENABLED = True
+
+# True时LCD/IDE只显示自动生成的检测ROI。
+# 这只改变调试画面，不改变检测、坐标、UART或闭环安全边界。
+TUNE_DISPLAY_ROI_ONLY = True
+# True时在画面左上角显示小号FPS；不会启用控制台周期日志。
+TUNE_DISPLAY_FPS = True
 
 # 下面是2026-07-21在当前Yahboom v1.8.0实机通过的圆检测参数。
 # dp：累加器分辨率比例；min_dist：两个圆心的最小距离。
@@ -51,7 +84,11 @@ TUNE_CIRCLE_PARAM1 = 80
 TUNE_CIRCLE_PARAM2 = 20
 TUNE_CIRCLE_MIN_RADIUS = 8
 TUNE_CIRCLE_MAX_RADIUS = 35
-TUNE_CONSOLE_INTERVAL_FRAMES = 10
+
+# 默认关闭循环日志，避免串口/IDE控制台输出拖慢视觉循环。
+# 临时调试时改为True；此时每60帧只打印一行精简状态。
+TUNE_CONSOLE_ENABLED = False
+TUNE_CONSOLE_INTERVAL_FRAMES = 60
 
 # -----------------------------------------------------------------------------
 # 动态跟踪与滤波参数
@@ -64,7 +101,8 @@ TUNE_BALL_EXPECTED_RADIUS = 17
 TUNE_BALL_TRACK_MAX_JUMP_PX = 80
 
 # 相邻有效帧半径最多变化8 px，排除半径突然变大的背景反光圆。
-TUNE_BALL_TRACK_MAX_RADIUS_CHANGE = 8
+# ★★★ 修改为 4，更严格限制半径变化，抑制跳变 ★★★
+TUNE_BALL_TRACK_MAX_RADIUS_CHANGE = 16
 
 # 连续丢失3帧后清除旧位置，允许钢球从远处重新进入ROI时被重新捕获。
 # 注意：每个丢失帧都会立即输出ball_valid=0，不会等待3帧才报错。
@@ -72,11 +110,12 @@ TUNE_BALL_TRACK_LOST_RESET_FRAMES = 3
 
 # 指数滤波系数。0.5表示当前原始位置和上一滤波结果各占一半。
 # 越接近1响应越快、抖动越大；越接近0越平滑、延迟越明显。
-TUNE_BALL_FILTER_ALPHA = 0.75
+# ★★★ 改为 0.55，适应 90 FPS，增强平滑 ★★★
+TUNE_BALL_FILTER_ALPHA = 0.55
 
-# 三点实测得到的物理中心和暂定安全边界。
+# 新支架三点实测得到的物理中心和暂定安全边界。
 # 当前相机画面右侧是固定端，左侧是舵机驱动端。
-TUNE_BALL_TARGET_X = 361
+TUNE_BALL_TARGET_X = 322
 TUNE_BALL_SAFE_LEFT_X = 60
 TUNE_BALL_SAFE_RIGHT_X = 598
 
@@ -87,7 +126,55 @@ def _apply_field_tuning():
         print("field_tuning=OFF, use config.py")
         return
 
-    config.BALL_ROI = tuple(TUNE_BALL_ROI)
+    requested_width = int(TUNE_VIEW_WIDTH)
+    requested_height = int(TUNE_VIEW_HEIGHT)
+    alignment = int(TUNE_VIEW_ALIGNMENT)
+    if (
+        alignment <= 0
+        or requested_width < alignment
+        or requested_height < alignment
+        or requested_width > config.CAMERA_WIDTH
+        or requested_height > config.CAMERA_HEIGHT
+    ):
+        raise ValueError(
+            "VIEW width/height must fit VGA and be at least one alignment unit"
+        )
+
+    view_width = requested_width - requested_width % alignment
+    view_height = requested_height - requested_height % alignment
+
+    crop_x = int(TUNE_VIEW_CENTER_X) - view_width // 2
+    crop_y = int(TUNE_VIEW_CENTER_Y) - view_height // 2
+    crop_x = max(0, min(config.CAMERA_WIDTH - view_width, crop_x))
+    crop_y = max(0, min(config.CAMERA_HEIGHT - view_height, crop_y))
+
+    config.CROP_ENABLED = bool(TUNE_CROP_ENABLED)
+    config.CROP_X = crop_x
+    config.CROP_Y = crop_y
+    config.CROP_WIDTH = view_width
+    config.CROP_HEIGHT = view_height
+    config.UART_ENABLED = bool(TUNE_UART_ENABLED)
+
+    if CALIBRATION_MODE:
+        # 标定阶段不能继续使用旧支架的裁剪框、ROI和控制坐标。
+        config.CROP_ENABLED = False
+        config.BALL_ROI = (
+            0,
+            0,
+            config.CAMERA_WIDTH,
+            config.CAMERA_HEIGHT,
+        )
+        config.UART_ENABLED = False
+    else:
+        roi_margin_x = int(TUNE_ROI_MARGIN_X)
+        roi_margin_y = int(TUNE_ROI_MARGIN_Y)
+        config.BALL_ROI = (
+            roi_margin_x,
+            roi_margin_y,
+            view_width - 2 * roi_margin_x,
+            view_height - 2 * roi_margin_y,
+        )
+    config.BALL_GRAYSCALE_ENABLED = bool(TUNE_GRAYSCALE_ENABLED)
     # 当前Yahboom v1.8.0的cv_lite绑定要求圆检测参数为整数。
     # 独立实机例程使用dp=1成功；不要在这里转换成1.0。
     config.BALL_CIRCLE_DP = int(TUNE_CIRCLE_DP)
@@ -106,6 +193,33 @@ def _apply_field_tuning():
     config.BALL_SAFE_RIGHT_X = int(TUNE_BALL_SAFE_RIGHT_X)
     config.CONSOLE_INTERVAL_FRAMES = int(TUNE_CONSOLE_INTERVAL_FRAMES)
 
+    if config.CROP_ENABLED and (
+        config.CROP_X < 0
+        or config.CROP_Y < 0
+        or config.CROP_WIDTH <= 0
+        or config.CROP_HEIGHT <= 0
+        or config.CROP_X + config.CROP_WIDTH > config.CAMERA_WIDTH
+        or config.CROP_Y + config.CROP_HEIGHT > config.CAMERA_HEIGHT
+    ):
+        raise ValueError("CROP rectangle must fit inside the VGA frame")
+
+    working_width = (
+        config.CROP_WIDTH if config.CROP_ENABLED else config.CAMERA_WIDTH
+    )
+    working_height = (
+        config.CROP_HEIGHT if config.CROP_ENABLED else config.CAMERA_HEIGHT
+    )
+    roi_x, roi_y, roi_width, roi_height = config.BALL_ROI
+    if (
+        roi_x < 0
+        or roi_y < 0
+        or roi_width <= 0
+        or roi_height <= 0
+        or roi_x + roi_width > working_width
+        or roi_y + roi_height > working_height
+    ):
+        raise ValueError("BALL_ROI must fit inside the processed frame")
+
     if not (
         config.BALL_SAFE_LEFT_X
         < config.BALL_TARGET_X
@@ -116,6 +230,34 @@ def _apply_field_tuning():
         raise ValueError("BALL_FILTER_ALPHA must be in (0, 1]")
 
     print("field_tuning=ON")
+    print(
+        "calibration_mode={} crop={} uart={}".format(
+            "ON" if CALIBRATION_MODE else "OFF",
+            "ON" if config.CROP_ENABLED else "OFF",
+            "ON" if config.UART_ENABLED else "OFF",
+        )
+    )
+    print(
+        "view_request={}x{} aligned_view={}x{}".format(
+            requested_width,
+            requested_height,
+            config.CROP_WIDTH,
+            config.CROP_HEIGHT,
+        )
+    )
+    print(
+        "crop_rect=({}, {}, {}, {})".format(
+            config.CROP_X,
+            config.CROP_Y,
+            config.CROP_WIDTH,
+            config.CROP_HEIGHT,
+        )
+    )
+    print(
+        "vision_format={}".format(
+            "GRAYSCALE" if config.BALL_GRAYSCALE_ENABLED else "RGB888"
+        )
+    )
     print("ball_roi={}".format(config.BALL_ROI))
     print(
         "circle dp={} min_dist={} param1={} param2={} radius={}-{}".format(
@@ -155,8 +297,8 @@ def _display_type():
 def _create_detector():
     """集中创建钢球检测器，避免算法常量散落在主循环。"""
     return BallDetector(
-        image_width=config.CAMERA_WIDTH,
-        image_height=config.CAMERA_HEIGHT,
+        image_width=config.CROP_WIDTH if config.CROP_ENABLED else config.CAMERA_WIDTH,
+        image_height=config.CROP_HEIGHT if config.CROP_ENABLED else config.CAMERA_HEIGHT,
         roi=config.BALL_ROI,
         dp=config.BALL_CIRCLE_DP,
         min_dist=config.BALL_CIRCLE_MIN_DIST,
@@ -168,6 +310,7 @@ def _create_detector():
         max_jump_px=config.BALL_TRACK_MAX_JUMP_PX,
         max_radius_change=config.BALL_TRACK_MAX_RADIUS_CHANGE,
         lost_reset_frames=config.BALL_TRACK_LOST_RESET_FRAMES,
+        use_grayscale=config.BALL_GRAYSCALE_ENABLED,
     )
 
 
@@ -183,7 +326,12 @@ def _add_control_measurement(result, position_filter):
         position_filter.reset()
         return None
 
-    raw_x = result["center"][0]
+    local_x = result["center"][0]
+    raw_x = (
+        local_x + config.CROP_X
+        if config.CROP_ENABLED
+        else local_x
+    )
     filtered_value = position_filter.update(raw_x)
 
     # 图像坐标均为非负数，+0.5后取整可得到最接近的整数像素。
@@ -192,6 +340,11 @@ def _add_control_measurement(result, position_filter):
 
     result["raw_x"] = raw_x
     result["filtered_x"] = filtered_x
+    result["frame_y"] = (
+        result["center"][1] + config.CROP_Y
+        if config.CROP_ENABLED
+        else result["center"][1]
+    )
     result["raw_error_px"] = pixel_position_error(raw_x, config.BALL_TARGET_X)
     result["error_px"] = pixel_position_error(filtered_x, config.BALL_TARGET_X)
     result["ball_safe"] = position_is_safe(
@@ -202,100 +355,118 @@ def _add_control_measurement(result, position_filter):
     return result
 
 
-def _draw_status(image, result, fps):
-    """在LCD帧上绘制ROI、目标中心、安全边界和钢球状态。"""
-    roi_x, roi_y, roi_width, roi_height = config.BALL_ROI
-    image.draw_rectangle(
-        roi_x, roi_y, roi_width, roi_height,
-        color=(0, 128, 255), thickness=2,
-    )
+def _draw_status(image, result, fps, grayscale):
+    """普通模式画钢球框和可选FPS；标定模式再画全画面参考。
 
-    roi_bottom = roi_y + roi_height - 1
+    result为None时绝不能读取上一帧坐标或访问result字段。
+    灰度帧使用0~255的单通道颜色值；RGB565帧使用RGB元组。
+    """
+    draw_color = 255 if grayscale else (255, 255, 255)
+    reference_color = 160 if grayscale else (0, 255, 255)
+    old_target_color = 220 if grayscale else (255, 255, 0)
 
-    # 两条青色细线表示闭环软件安全边界，不代表轨道物理端点。
-    image.draw_line(
-        config.BALL_SAFE_LEFT_X, roi_y,
-        config.BALL_SAFE_LEFT_X, roi_bottom,
-        color=(0, 255, 255), thickness=1,
-    )
-    image.draw_line(
-        config.BALL_SAFE_RIGHT_X, roi_y,
-        config.BALL_SAFE_RIGHT_X, roi_bottom,
-        color=(0, 255, 255), thickness=1,
-    )
+    # 普通复测模式只保留本帧钢球框和可选的小号FPS。
+    if not CALIBRATION_MODE:
+        if result is not None:
+            bbox_x, bbox_y, bbox_width, bbox_height = result["bbox"]
+            image.draw_rectangle(
+                bbox_x, bbox_y, bbox_width, bbox_height,
+                color=draw_color, thickness=2,
+            )
+        if TUNE_DISPLAY_FPS:
+            image.draw_string_advanced(
+                4, 4, 16,
+                "FPS:{:.1f}".format(fps),
+                color=draw_color,
+            )
+        return
 
-    # 黄色竖线是实测物理中心，也是error_px=0的位置。
-    image.draw_line(
-        config.BALL_TARGET_X, roi_y,
-        config.BALL_TARGET_X, roi_bottom,
-        color=(255, 255, 0), thickness=2,
+    if CALIBRATION_MODE:
+        image_center_x = config.CAMERA_WIDTH // 2
+        image_center_y = config.CAMERA_HEIGHT // 2
+
+        # 细线表示VGA图像中心，只作坐标参考，不代表机械轨道中心。
+        image.draw_line(
+            image_center_x, 0,
+            image_center_x, config.CAMERA_HEIGHT - 1,
+            color=reference_color, thickness=1,
+        )
+        image.draw_line(
+            0, image_center_y,
+            config.CAMERA_WIDTH - 1, image_center_y,
+            color=reference_color, thickness=1,
+        )
+
+        # 粗线表示旧支架的目标x=361，只用于比较改架前后的偏移。
+        image.draw_line(
+            config.BALL_TARGET_X, 0,
+            config.BALL_TARGET_X, config.CAMERA_HEIGHT - 1,
+            color=old_target_color, thickness=2,
+        )
+
+    # 当前Yahboom v1.8.0会为draw_string()逐帧打印弃用警告，
+    # 因此使用已经过实机验证的draw_string_advanced()。
+    image.draw_string_advanced(
+        4, 4, 24,
+        (
+            "CAL VGA FPS:{:.1f}".format(fps)
+            if CALIBRATION_MODE
+            else "FPS:{:.1f}".format(fps)
+        ),
+        color=draw_color,
     )
 
     if result is None:
-        image.draw_string_advanced(10, 10, 24, "BALL NOT FOUND", color=(255, 80, 80))
-        image.draw_string_advanced(10, 40, 18, "No circle in ROI", color=(255, 255, 255))
-        image.draw_string_advanced(10, 64, 18, "FPS:{:.1f}".format(fps), color=(255, 255, 0))
+        if CALIBRATION_MODE:
+            image.draw_string_advanced(
+                4, 32, 16,
+                "BALL NOT FOUND  IMG=320,240 OLD_X={}".format(
+                    config.BALL_TARGET_X
+                ),
+                color=draw_color,
+            )
         return
 
     center_x, center_y = result["center"]
     bbox_x, bbox_y, bbox_width, bbox_height = result["bbox"]
-
-    # 绿色框和红色十字只表示本帧钢球候选，不复用上一帧坐标。
-    ball_color = (0, 255, 0) if result["ball_safe"] else (255, 128, 0)
     image.draw_rectangle(
         bbox_x, bbox_y, bbox_width, bbox_height,
-        color=ball_color, thickness=3,
+        color=draw_color, thickness=2,
     )
-    image.draw_cross(
-        center_x, center_y, color=(255, 0, 0), size=12, thickness=3,
-    )
+    if CALIBRATION_MODE:
+        image.draw_cross(
+            center_x, center_y,
+            color=draw_color, size=10, thickness=2,
+        )
+        image.draw_string_advanced(
+            4, 32, 16,
+            "X={} Y={} R={} C={}".format(
+                center_x,
+                center_y,
+                result["radius"],
+                result["raw_circle_count"],
+            ),
+            color=draw_color,
+        )
 
-    # 紫色小十字表示滤波后的控制位置。它通常靠近红色原始圆心；运动时会因
-    # 低通滤波略微落后，这是用少量延迟换取更平滑控制量的正常现象。
-    image.draw_cross(
-        result["filtered_x"], center_y,
-        color=(255, 0, 255), size=6, thickness=1,
-    )
-    status_text = "BALL OK" if result["ball_safe"] else "BALL UNSAFE"
-    image.draw_string_advanced(10, 10, 24, status_text, color=ball_color)
-    image.draw_string_advanced(
-        10, 38, 18,
-        "RAW:{} FIL:{}".format(result["raw_x"], result["filtered_x"]),
-        color=(255, 255, 255),
-    )
-    image.draw_string_advanced(
-        10, 64, 20, "ERRPX:{:+d}".format(result["error_px"]), color=(255, 255, 0),
-    )
-    image.draw_string_advanced(
-        10, 90, 18, "R:{}".format(result["radius"]), color=(255, 255, 255),
-    )
-    image.draw_string_advanced(10, 114, 18, "FPS:{:.1f}".format(fps), color=(255, 255, 0))
 
 
 def _print_result(result, fps):
-    """限频输出固定字段，方便复制现场记录。"""
+    """按需输出一行精简运行状态，不再打印累计诊断计数。"""
     if result is None:
         print(
-            "ball_valid=0 ball_safe=0 raw_x=-1 filtered_x=-1 center_y=-1 "
-            "raw_error_px=0 error_px=0 radius=0 detector=none fps={:.1f}".format(fps)
+            "ball_valid=0 ball_safe=0 fps={:.1f}".format(fps)
         )
         return
 
-    center_x, center_y = result["center"]
     print(
-        "ball_valid=1 ball_safe={} raw_x={} filtered_x={} center_y={} "
-        "raw_error_px={} error_px={} radius={} raw_circles={} "
-        "tracking={} detector={} fps={:.1f}".format(
+        "ball_valid=1 ball_safe={} raw_x={} filtered_x={} "
+        "error_px={} radius={} fps={:.1f}".format(
             1 if result["ball_safe"] else 0,
             result["raw_x"],
             result["filtered_x"],
-            center_y,
-            result["raw_error_px"],
             result["error_px"],
             result["radius"],
-            result["raw_circle_count"],
-            result["tracking_mode"],
-            result["detector"],
             fps,
         )
     )
@@ -311,9 +482,10 @@ def run():
     _apply_field_tuning()
     detector = _create_detector()
     position_filter = ExponentialFilter(config.BALL_FILTER_ALPHA)
-    if not detector.capability_report()["rgb888_find_circles"]:
-        raise RuntimeError("required API missing: cv_lite.rgb888_find_circles")
-    print("cv_lite.rgb888_find_circles=OK")
+    required_api = detector.required_api_name()
+    if not detector.capability_report()[required_api]:
+        raise RuntimeError("required API missing: cv_lite.{}".format(required_api))
+    print("cv_lite.{}=OK".format(required_api))
     print("ball_detection=hough_circle_in_fixed_roi")
     print(
         "uart={} id={} baud={} tx_io={} rx_io={} servo=OFF".format(
@@ -348,12 +520,15 @@ def run():
         sensor.set_vflip(config.CAMERA_VFLIP)
         sensor.auto_exposure(config.CAMERA_AUTO_EXPOSURE)
         sensor.set_framesize(width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
-        sensor.set_pixformat(Sensor.RGB888)
+        # cv_lite的灰度/RGB888圆检测函数要求输入格式与Sensor输出严格一致。
+        # 灰度模式由Sensor直接产生单通道图像，不在Python循环里做格式转换。
+        if config.BALL_GRAYSCALE_ENABLED:
+            sensor.set_pixformat(Sensor.GRAYSCALE)
+        else:
+            sensor.set_pixformat(Sensor.RGB888)
 
         Display.init(
             _display_type(),
-            width=config.DISPLAY_WIDTH,
-            height=config.DISPLAY_HEIGHT,
             to_ide=config.DISPLAY_TO_IDE,
         )
         display_initialized = True
@@ -368,6 +543,11 @@ def run():
         while True:
             clock.tick()
             frame = sensor.snapshot()
+
+            if config.CROP_ENABLED:
+                frame = frame.crop(roi=(config.CROP_X, config.CROP_Y,
+                                        config.CROP_WIDTH, config.CROP_HEIGHT))
+
             result = _add_control_measurement(
                 detector.detect(frame),
                 position_filter,
@@ -386,14 +566,39 @@ def run():
                     result["filtered_x"],
                 )
 
-            # cv_lite处理完成后再转RGB565，避免破坏检测输入。
-            display_frame = frame.to_rgb565()
-            _draw_status(display_frame, result, clock.fps())
-            display_x = max(0, (config.DISPLAY_WIDTH - config.CAMERA_WIDTH) // 2)
-            display_y = max(0, (config.DISPLAY_HEIGHT - config.CAMERA_HEIGHT) // 2)
-            Display.show_image(display_frame, x=display_x, y=display_y)
+            if config.BALL_GRAYSCALE_ENABLED:
+                # 直接在1字节/像素的灰度Sensor帧上画灰度标记。
+                # 不调用to_rgb565()，因此没有灰度缓冲扩展和额外整帧转换。
+                display_frame = frame
+            else:
+                # RGB888回退模式仍转换为RGB565后再显示。
+                display_frame = frame.to_rgb565()
+            _draw_status(
+                display_frame,
+                result,
+                clock.fps(),
+                config.BALL_GRAYSCALE_ENABLED,
+            )
+            full_working_roi = (
+                0,
+                0,
+                config.CROP_WIDTH,
+                config.CROP_HEIGHT,
+            )
+            if (
+                TUNE_DISPLAY_ROI_ONLY
+                and not CALIBRATION_MODE
+                and config.BALL_ROI != full_working_roi
+            ):
+                display_frame = display_frame.crop(roi=config.BALL_ROI)
+            # 使用Yahboom官方例程已验证的ST7701默认显示尺寸和默认原点。
+            # 不强制创建800x480显示层，避免IDE可见但脱机LCD没有画面。
+            Display.show_image(display_frame)
 
-            if frame_count % config.CONSOLE_INTERVAL_FRAMES == 0:
+            if (
+                TUNE_CONSOLE_ENABLED
+                and frame_count % config.CONSOLE_INTERVAL_FRAMES == 0
+            ):
                 _print_result(result, clock.fps())
             if result is not None:
                 debug_saver.save_if_due(display_frame)

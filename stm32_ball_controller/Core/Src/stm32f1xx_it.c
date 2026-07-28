@@ -22,6 +22,7 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "servo_output.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -187,7 +188,15 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-
+  /*
+   * 固定时序顺序：
+   * 1. 控制调度器每20 ms读取最新视觉状态并执行一次PD；
+   * 2. 舵机输出模块每20 ms让实际CCR向最新目标靠近一步。
+   *
+   * 两者都由1 ms SysTick提供时基，因此不再依赖主循环执行速度。
+   */
+  AppControl_On1msTick();
+  ServoOutput_On1msTick();
   /* USER CODE END SysTick_IRQn 1 */
 }
 

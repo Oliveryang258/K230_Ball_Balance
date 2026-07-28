@@ -2,8 +2,8 @@
 """Yahboom CanMV K230 v1.8.0 钢球圆检测器。
 
 设备 API：
+- cv_lite.grayscale_find_circles()
 - cv_lite.rgb888_find_circles()
-- CanMV Image.copy(roi)
 - CanMV Image.to_numpy_ref()
 
 硬件：Yahboom K230 12Pin，板载摄像头，浅色轨道上的反光钢球。
@@ -52,27 +52,14 @@ class BallDetector:
         max_jump_px,
         max_radius_change,
         lost_reset_frames,
+        use_grayscale=False,
     ):
         # cv_lite 要求图像形状顺序为 [高度, 宽度]。
         self.image_width = int(image_width)
         self.image_height = int(image_height)
         self.image_shape = [self.image_height, self.image_width]
         self.roi = tuple(roi)
-        self.roi_x = int(self.roi[0])
-        self.roi_y = int(self.roi[1])
-        self.roi_width = int(self.roi[2])
-        self.roi_height = int(self.roi[3])
-        self.roi_image_shape = [self.roi_height, self.roi_width]
-
-        # 霍夫圆只处理裁剪后的ROI小图，但结果仍恢复到640x480原图坐标。
-        if self.roi_width <= 0 or self.roi_height <= 0:
-            raise ValueError("roi width and height must be positive")
-        if self.roi_x < 0 or self.roi_y < 0:
-            raise ValueError("roi origin must not be negative")
-        if self.roi_x + self.roi_width > self.image_width:
-            raise ValueError("roi exceeds image width")
-        if self.roi_y + self.roi_height > self.image_height:
-            raise ValueError("roi exceeds image height")
+        self.use_grayscale = bool(use_grayscale)
         # Yahboom CanMV v1.8.0 的 cv_lite 绑定在实机上要求这里传整数。
         # 保持与已成功运行的独立例程 dp=1 完全相同，不能改成 1.0。
         self.dp = int(dp)
@@ -101,12 +88,35 @@ class BallDetector:
         self.previous_center = None
         self.previous_radius = None
         self.missed_frames = 0
+        self.last_invalid_streak = 0
+        self.last_raw_circle_count = 0
+        self.last_reject_radius_range_count = 0
+        self.last_reject_roi_count = 0
+        self.last_reject_jump_count = 0
+        self.last_reject_radius_change_count = 0
+        self.diagnostic_frame_count = 0
+        self.diagnostic_valid_frame_count = 0
+        self.diagnostic_raw_empty_frame_count = 0
+        self.diagnostic_filtered_out_frame_count = 0
+        self.diagnostic_reject_radius_frame_count = 0
+        self.diagnostic_reject_roi_frame_count = 0
+        self.diagnostic_reject_jump_frame_count = 0
+        self.diagnostic_reject_radius_change_frame_count = 0
 
     def capability_report(self):
-        """报告当前算法唯一依赖的 cv_lite 圆检测函数。"""
+        """报告两种像素格式对应的cv_lite圆检测函数。"""
         return {
+            "grayscale_find_circles": hasattr(
+                cv_lite, "grayscale_find_circles"
+            ),
             "rgb888_find_circles": hasattr(cv_lite, "rgb888_find_circles")
         }
+
+    def required_api_name(self):
+        """返回当前模式必须具备的cv_lite接口名。"""
+        if self.use_grayscale:
+            return "grayscale_find_circles"
+        return "rgb888_find_circles"
 
     def reset_tracking(self):
         """清除历史位置；下一次有效检测将在整个 ROI 内重新捕获。"""
@@ -122,21 +132,35 @@ class BallDetector:
 
     def _select_candidate(self, raw_circles):
         """从 [x, y, r, ...] 中选择与钢球历史最连续的合格圆。"""
+        self.last_raw_circle_count = (
+            len(raw_circles) // 3 if raw_circles else 0
+        )
+        self.last_reject_radius_range_count = 0
+        self.last_reject_roi_count = 0
+        self.last_reject_jump_count = 0
+        self.last_reject_radius_change_count = 0
+
+        if not raw_circles:
+            return None
+
         best = None
         best_score = None
         tracking_active = self.previous_center is not None
         roi_center_y = self.roi[1] + self.roi[3] // 2
 
         for index in range(0, len(raw_circles) - 2, 3):
-            # cv_lite返回的是ROI局部坐标；加回偏移后继续使用原图坐标系。
-            center_x = int(raw_circles[index]) + self.roi_x
-            center_y = int(raw_circles[index + 1]) + self.roi_y
+            # cv_lite在完整640x480图像上检测，因此这里已经是原图坐标。
+            # ROI只在候选筛选阶段使用，不再为每一帧复制一张ROI图像。
+            center_x = int(raw_circles[index])
+            center_y = int(raw_circles[index + 1])
             radius = int(raw_circles[index + 2])
 
             # cv_lite 已按 min/max radius 检测，这里再次检查。
             if radius < self.min_radius or radius > self.max_radius:
+                self.last_reject_radius_range_count += 1
                 continue
             if not _center_in_roi(center_x, center_y, self.roi):
+                self.last_reject_roi_count += 1
                 continue
             if tracking_active:
                 # 跟踪阶段：位置连续性优先。远处突然出现的大圆通常是反光
@@ -147,8 +171,10 @@ class BallDetector:
                 radius_change = abs(radius - self.previous_radius)
 
                 if distance_squared > self.max_jump_squared:
+                    self.last_reject_jump_count += 1
                     continue
                 if radius_change > self.max_radius_change:
+                    self.last_reject_radius_change_count += 1
                     continue
 
                 # 距离平方作为主评分；半径变化只是较小的附加惩罚。
@@ -185,16 +211,19 @@ class BallDetector:
         return best
 
     def detect(self, image):
-        """处理一帧 RGB888 CanMV 图像；成功返回字典，失败返回 None。"""
-        if not hasattr(cv_lite, "rgb888_find_circles"):
-            raise RuntimeError("cv_lite.rgb888_find_circles is missing")
+        """处理一帧灰度或RGB888图像；成功返回字典，失败返回None。"""
+        api_name = self.required_api_name()
+        if not hasattr(cv_lite, api_name):
+            raise RuntimeError("cv_lite.{} is missing".format(api_name))
+        find_circles = getattr(cv_lite, api_name)
 
-        # cv_lite圆检测没有ROI参数，所以先生成紧凑的RGB888轨道小图。
-        # 当前620x90 ROI只有原640x480画面约18.2%的像素。
-        roi_image = image.copy(self.roi)
-        image_array = roi_image.to_numpy_ref()
-        raw_circles = cv_lite.rgb888_find_circles(
-            self.roi_image_shape,
+        # 直接取得Sensor当前帧的零拷贝引用，在整帧上执行霍夫圆。
+        # 灰度模式要求Sensor本身输出GRAYSCALE，不能把RGB888引用交给灰度接口。
+        # 不调用 image.copy(roi)，避免K230每帧裁剪/分配临时图像造成严重掉帧。
+        # cv_lite返回候选后，再由_select_candidate()按BALL_ROI过滤圆心。
+        image_array = image.to_numpy_ref()
+        raw_circles = find_circles(
+            self.image_shape,
             image_array,
             self.dp,
             self.min_dist,
@@ -203,18 +232,31 @@ class BallDetector:
             self.min_radius,
             self.max_radius,
         )
-        # cv_lite已经完成读取，立即释放临时ROI引用，降低内存滞留风险。
-        del image_array
-        del roi_image
         result = self._select_candidate(raw_circles)
+        self.diagnostic_frame_count += 1
 
         if result is None:
             # 只保留有限帧的"身份参考"，但本帧仍立即返回 None。
+            if self.last_raw_circle_count == 0:
+                self.diagnostic_raw_empty_frame_count += 1
+            else:
+                self.diagnostic_filtered_out_frame_count += 1
+                if self.last_reject_radius_range_count > 0:
+                    self.diagnostic_reject_radius_frame_count += 1
+                if self.last_reject_roi_count > 0:
+                    self.diagnostic_reject_roi_frame_count += 1
+                if self.last_reject_jump_count > 0:
+                    self.diagnostic_reject_jump_frame_count += 1
+                if self.last_reject_radius_change_count > 0:
+                    self.diagnostic_reject_radius_change_frame_count += 1
+            self.last_invalid_streak += 1
             self._record_miss()
             return None
 
         # 只有本帧真正检测成功，才能更新历史参考。
+        self.diagnostic_valid_frame_count += 1
         self.previous_center = result["center"]
         self.previous_radius = result["radius"]
         self.missed_frames = 0
+        self.last_invalid_streak = 0
         return result

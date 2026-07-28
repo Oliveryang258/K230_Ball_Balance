@@ -3,10 +3,14 @@
 
 static TIM_HandleTypeDef *s_timer = 0;
 static uint32_t s_channel = 0U;
-static bool s_started = false;
-static uint16_t s_current_pulse_us = SERVO_PWM_NEUTRAL_US;
-static uint16_t s_target_pulse_us = SERVO_PWM_NEUTRAL_US;
-static uint32_t s_last_update_ms = 0U;
+/*
+ * 20 ms控制任务写目标值，1 ms舵机节拍读取目标值并更新当前值。
+ * 这些跨不同执行上下文共享的标量使用volatile。
+ */
+static volatile bool s_started = false;
+static volatile uint16_t s_current_pulse_us = SERVO_PWM_NEUTRAL_US;
+static volatile uint16_t s_target_pulse_us = SERVO_PWM_NEUTRAL_US;
+static volatile uint16_t s_tick_count_ms = 0U;
 
 static uint16_t clamp_test_pulse(uint16_t pulse_us)
 {
@@ -32,7 +36,7 @@ bool ServoOutput_Init(TIM_HandleTypeDef *htim, uint32_t channel)
     s_channel = channel;
     s_current_pulse_us = SERVO_PWM_NEUTRAL_US;
     s_target_pulse_us = SERVO_PWM_NEUTRAL_US;
-    s_last_update_ms = HAL_GetTick();
+    s_tick_count_ms = 0U;
 
     /*
      * 必须先写中位比较值，再启动PWM。
@@ -62,7 +66,7 @@ void ServoOutput_SetNeutral(void)
     s_target_pulse_us = SERVO_PWM_NEUTRAL_US;
 }
 
-void ServoOutput_Process(uint32_t now_ms)
+void ServoOutput_On1msTick(void)
 {
     uint16_t difference;
 
@@ -71,12 +75,16 @@ void ServoOutput_Process(uint32_t now_ms)
         return;
     }
 
-    /* 使用无符号减法，可正确处理 HAL_GetTick() 的自然回绕。 */
-    if ((uint32_t)(now_ms - s_last_update_ms) < SERVO_COMMAND_UPDATE_MS)
+    /*
+     * SysTick固定每1 ms调用一次；累计到软件更新周期后才修改一次CCR。
+     * 这样实际脉宽的渐变节拍不再依赖主循环速度。
+     */
+    s_tick_count_ms++;
+    if (s_tick_count_ms < SERVO_COMMAND_UPDATE_MS)
     {
         return;
     }
-    s_last_update_ms = now_ms;
+    s_tick_count_ms = 0U;
 
     if (s_current_pulse_us < s_target_pulse_us)
     {
@@ -107,6 +115,7 @@ void ServoOutput_Stop(void)
         (void)HAL_TIM_PWM_Stop(s_timer, s_channel);
     }
     s_started = false;
+    s_tick_count_ms = 0U;
 }
 
 bool ServoOutput_IsStarted(void)
@@ -123,4 +132,3 @@ uint16_t ServoOutput_GetTargetPulseUs(void)
 {
     return s_target_pulse_us;
 }
-

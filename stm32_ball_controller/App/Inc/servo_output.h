@@ -26,8 +26,13 @@ void ServoOutput_SetTargetPulseUs(uint16_t pulse_us);
 /* 将目标值恢复为中位，但仍通过缓变机制逐步回中。 */
 void ServoOutput_SetNeutral(void);
 
-/* 主循环重复调用；内部每到一个软件更新周期才改变一次比较值。 */
-void ServoOutput_Process(uint32_t now_ms);
+/*
+ * 由1 ms SysTick中断调用。
+ * 内部累计到SERVO_COMMAND_UPDATE_MS后，才让当前脉宽向目标脉宽移动
+ * 最多SERVO_MAX_STEP_US，并把新值写入TIM2比较寄存器。
+ * PD计算由同一个SysTick中的固定20 ms控制任务执行。
+ */
+void ServoOutput_On1msTick(void);
 
 /* 停止硬件PWM输出。 */
 void ServoOutput_Stop(void);
@@ -38,4 +43,3 @@ uint16_t ServoOutput_GetCurrentPulseUs(void);
 uint16_t ServoOutput_GetTargetPulseUs(void);
 
 #endif
-
