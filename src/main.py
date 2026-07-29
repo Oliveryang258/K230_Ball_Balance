@@ -116,8 +116,8 @@ TUNE_BALL_FILTER_ALPHA = 0.55
 # 新支架三点实测得到的物理中心和暂定安全边界。
 # 当前相机画面右侧是固定端，左侧是舵机驱动端。
 TUNE_BALL_TARGET_X = 322
-TUNE_BALL_SAFE_LEFT_X = 60
-TUNE_BALL_SAFE_RIGHT_X = 598
+TUNE_BALL_SAFE_LEFT_X = 30
+TUNE_BALL_SAFE_RIGHT_X = 610
 
 
 def _apply_field_tuning():
@@ -373,11 +373,6 @@ def _draw_status(image, result, fps, grayscale):
                 bbox_x, bbox_y, bbox_width, bbox_height,
                 color=draw_color, thickness=2,
             )
-        image.draw_line(
-            config.BALL_TARGET_X, 0,
-            config.BALL_TARGET_X, image.height() - 1,
-            color=reference_color, thickness=1,
-        )
         if TUNE_DISPLAY_FPS:
             image.draw_string_advanced(
                 4, 4, 16,
