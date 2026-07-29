@@ -26,6 +26,7 @@
 #include "app_config.h"
 #include "ball_controller.h"
 #include "control_guard.h"
+#include "icm20602.h"
 #include "servo_output.h"
 /* USER CODE END Includes */
 
@@ -73,6 +74,31 @@ volatile uint8_t g_control_runtime_started = 0U;
 volatile uint32_t g_control_tick_count = 0U;
 
 /*
+ * ICM20602 第一阶段调试变量。
+ *
+ * 这些变量只用于确认“供电、软件I2C、初始化和数据读取”是否正常，
+ * 当前没有接入位置环、速度环或舵机PWM计算。
+ *
+ * Keil Watch 建议先观察：
+ *   g_imu_init_ok       初始化是否成功，成功应为1
+ *   g_imu_status        驱动状态，1表示ICM20602_STATUS_OK
+ *   g_imu_who_am_i      芯片身份，正确应为0x12
+ *   g_imu_address       AD0低/高分别对应0x68/0x69
+ *   g_imu_sample_count  成功读取计数，应持续增加
+ *   g_imu_error_count   运行时读取失败计数，正常应保持0
+ *   g_imu_sample        展开后查看加速度、角速度和温度
+ */
+volatile uint8_t g_imu_init_ok = 0U;
+volatile uint8_t g_imu_valid = 0U;
+volatile uint8_t g_imu_status = (uint8_t)ICM20602_STATUS_NOT_INITIALIZED;
+volatile uint8_t g_imu_who_am_i = 0U;
+volatile uint8_t g_imu_address = 0U;
+volatile uint32_t g_imu_sample_count = 0U;
+volatile uint32_t g_imu_error_count = 0U;
+volatile uint32_t g_imu_last_read_tick = 0U;
+ICM20602Sample g_imu_sample = {0};
+
+/*
  * 舵机台架调试变量：默认关闭手动测试，默认目标取自配置文件中的暂定中位。
  * 使用 Watch 手动测试前必须取下钢球，并确认连杆没有顶死或明显预紧。
  */
@@ -95,6 +121,8 @@ volatile float g_kp = BALL_CONTROL_DEFAULT_KP_US_PER_PX;
 volatile float g_ki = BALL_CONTROL_DEFAULT_KI_US_PER_PX_S;
 volatile float g_kv = BALL_CONTROL_DEFAULT_KV_US_PER_PX_S;
 volatile int8_t g_dir = BALL_CONTROL_DEFAULT_DIRECTION;
+volatile int16_t g_target_x = BALL_CONTROL_DEFAULT_TARGET_X;
+volatile uint16_t g_hold_pwm_us = BALL_CONTROL_DEFAULT_HOLD_PWM_US;
 
 /*
  * Keil Watch只读调试结构体。
@@ -116,6 +144,7 @@ typedef struct
     uint32_t i_reset_count; /* I从非零变为零的累计次数 */
     uint16_t pwm_target;    /* 舵机模块当前目标脉宽 */
     uint16_t pwm_now;       /* 当前实际写入CCR的脉宽 */
+    float friction;              /* static-friction correction, us */
 } ControlDebug;
 
 volatile ControlDebug g_dbg = {0};
@@ -176,6 +205,53 @@ static void Debug_RecordIntegralReset(uint8_t reason)
 }
 
 /*
+ * 在 main 普通上下文中以100 Hz读取IMU。
+ *
+ * 软件I2C逐位产生时序，属于阻塞式操作，因此绝不能把本函数放进
+ * SysTick或UART中断。中断仍然可以短暂抢占本函数，不会把50 Hz球控
+ * 任务的计算主体变成阻塞式I2C。
+ */
+static void AppImu_Poll(void)
+{
+    static uint32_t previous_read_tick = 0U;
+    uint32_t now_tick;
+    ICM20602Sample new_sample;
+
+    if (g_imu_init_ok == 0U)
+    {
+        return;
+    }
+
+    now_tick = HAL_GetTick();
+    if ((uint32_t)(now_tick - previous_read_tick) < 10U)
+    {
+        return;
+    }
+
+    /*
+     * 使用当前真实毫秒tick调度，不在循环中做HAL_Delay(10)。
+     * 如果主循环偶尔被其他任务推迟，直接以当前时刻重新定基准，
+     * 避免随后连续补读多帧旧数据。
+     */
+    previous_read_tick = now_tick;
+    g_imu_last_read_tick = now_tick;
+
+    if (ICM20602_ReadSample(&new_sample))
+    {
+        g_imu_sample = new_sample;
+        g_imu_valid = 1U;
+        g_imu_sample_count++;
+    }
+    else
+    {
+        g_imu_valid = 0U;
+        g_imu_error_count++;
+    }
+
+    g_imu_status = (uint8_t)ICM20602_GetStatus();
+}
+
+/*
  * 固定1 ms入口、20 ms执行一次的控制任务。
  * USART ISR只发布数据；本函数先做一致性快照，再在中断保持开启的情况下
  * 完成guard、速度估计、位置PID和舵机slew目标更新。
@@ -209,6 +285,19 @@ void AppControl_On1msTick(void)
     control_divider_ms = 0U;
     g_control_tick_count++;
     now_ms = HAL_GetTick();
+
+    /*
+     * Watch中可直接修改g_target_x和g_hold_pwm_us。
+     * 每个控制周期都写回限幅后的真实值，避免调试时输入越界参数。
+     */
+    g_target_x = BallController_SetTargetX(
+        &g_ball_controller,
+        g_target_x
+    );
+    g_hold_pwm_us = BallController_SetEquilibriumPulseUs(
+        &g_ball_controller,
+        g_hold_pwm_us
+    );
 
     /*
      * TakeSnapshot仅在复制共享字段期间短暂关闭中断。
@@ -324,66 +413,70 @@ void AppControl_On1msTick(void)
     g_dbg.i = g_ball_controller.i_term_us;
     g_dbg.d = g_ball_controller.d_term_us;
     g_dbg.out = g_ball_controller.control_offset_us;
+    g_dbg.friction = g_ball_controller.stiction_compensation_us;
     g_dbg.pwm_target = ServoOutput_GetTargetPulseUs();
     g_dbg.pwm_now = ServoOutput_GetCurrentPulseUs();
 
-    /*
-     * The 50 Hz control ISR only publishes a snapshot. The main loop starts
-     * the non-blocking UART transfer, so telemetry can never wait inside the
-     * control path.
-     */
-    telemetry_sample.tick_ms = now_ms;
-    telemetry_sample.vision_frame_id = g_measurement.frame_id;
-    telemetry_sample.ball_x = g_measurement.ball_x;
-    telemetry_sample.error_px = g_measurement.error_px;
-    telemetry_sample.velocity_px_s =
-        Telemetry_RoundFloatToI16(g_ball_controller.velocity_px_s);
-    telemetry_sample.p_term_us =
-        Telemetry_RoundFloatToI16(g_ball_controller.p_term_us);
-    telemetry_sample.i_term_us =
-        Telemetry_RoundFloatToI16(g_ball_controller.i_term_us);
-    telemetry_sample.d_term_us =
-        Telemetry_RoundFloatToI16(g_ball_controller.d_term_us);
-    telemetry_sample.control_offset_us =
-        Telemetry_RoundFloatToI16(g_ball_controller.control_offset_us);
-    telemetry_sample.servo_target_us = g_dbg.pwm_target;
-    telemetry_sample.servo_current_us = g_dbg.pwm_now;
-    telemetry_sample.guard_state = (uint8_t)g_guard_state;
-    telemetry_sample.measurement_status = g_dbg.meas_status;
-    telemetry_sample.flags = 0U;
-    if (g_apply != 0U)
+    if (g_telemetry_tx_started != 0U)
     {
-        telemetry_sample.flags |= TELEMETRY_FLAG_APPLY_OUTPUT;
+        /*
+         * The 50 Hz control ISR only publishes a snapshot. The main loop
+         * starts the non-blocking UART transfer, so telemetry can never wait
+         * inside the control path.
+         */
+        telemetry_sample.tick_ms = now_ms;
+        telemetry_sample.vision_frame_id = g_measurement.frame_id;
+        telemetry_sample.ball_x = g_measurement.ball_x;
+        telemetry_sample.error_px = g_ball_controller.error_px;
+        telemetry_sample.velocity_px_s =
+            Telemetry_RoundFloatToI16(g_ball_controller.velocity_px_s);
+        telemetry_sample.p_term_us =
+            Telemetry_RoundFloatToI16(g_ball_controller.p_term_us);
+        telemetry_sample.i_term_us =
+            Telemetry_RoundFloatToI16(g_ball_controller.i_term_us);
+        telemetry_sample.d_term_us =
+            Telemetry_RoundFloatToI16(g_ball_controller.d_term_us);
+        telemetry_sample.control_offset_us =
+            Telemetry_RoundFloatToI16(g_ball_controller.control_offset_us);
+        telemetry_sample.servo_target_us = g_dbg.pwm_target;
+        telemetry_sample.servo_current_us = g_dbg.pwm_now;
+        telemetry_sample.guard_state = (uint8_t)g_guard_state;
+        telemetry_sample.measurement_status = g_dbg.meas_status;
+        telemetry_sample.flags = 0U;
+        if (g_apply != 0U)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_APPLY_OUTPUT;
+        }
+        if (g_manual != 0U)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_MANUAL_MODE;
+        }
+        if (g_measurement.ball_valid)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_BALL_VALID;
+        }
+        if (g_measurement.ball_safe)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_BALL_SAFE;
+        }
+        if (control_ran)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_CONTROL_RAN;
+        }
+        if (g_ball_controller.saturated)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_OUTPUT_SATURATED;
+        }
+        if (g_servo_pwm_started != 0U)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_SERVO_STARTED;
+        }
+        if (rx_snapshot.new_packet)
+        {
+            telemetry_sample.flags |= TELEMETRY_FLAG_NEW_VISION_PACKET;
+        }
+        AppTelemetryTx_Publish(&telemetry_sample);
     }
-    if (g_manual != 0U)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_MANUAL_MODE;
-    }
-    if (g_measurement.ball_valid)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_BALL_VALID;
-    }
-    if (g_measurement.ball_safe)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_BALL_SAFE;
-    }
-    if (control_ran)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_CONTROL_RAN;
-    }
-    if (g_ball_controller.saturated)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_OUTPUT_SATURATED;
-    }
-    if (g_servo_pwm_started != 0U)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_SERVO_STARTED;
-    }
-    if (rx_snapshot.new_packet)
-    {
-        telemetry_sample.flags |= TELEMETRY_FLAG_NEW_VISION_PACKET;
-    }
-    AppTelemetryTx_Publish(&telemetry_sample);
 }
 /* USER CODE END 0 */
 
@@ -428,7 +521,8 @@ int main(void)
 		Error_Handler();
 	}
 	g_uart_rx_started = 1U;
-	if (AppTelemetryTx_Init(&huart1))
+	if ((APP_TELEMETRY_ENABLED != 0U) &&
+		AppTelemetryTx_Init(&huart1))
 	{
 		g_telemetry_tx_started = 1U;
 	}
@@ -444,6 +538,17 @@ int main(void)
 	g_servo_pwm_started = 1U;
 	BallController_Init(&g_ball_controller);
 	g_control_runtime_started = 1U;
+
+	/*
+	 * IMU初始化失败不会进入Error_Handler，也不会阻止原有视觉闭环运行。
+	 * 这样即使暂时没接ICM20602，也能在Watch中根据状态码排查接线。
+	 * 修正接线后需要复位STM32，让初始化流程重新执行一次。
+	 */
+	g_imu_init_ok = ICM20602_Init() ? 1U : 0U;
+	g_imu_status = (uint8_t)ICM20602_GetStatus();
+	g_imu_who_am_i = ICM20602_GetWhoAmI();
+	g_imu_address = ICM20602_GetAddress();
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_13, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -460,11 +565,15 @@ int main(void)
 		g_uart_valid_packet_count = AppUartRx_GetValidPacketCount();
 		g_uart_error_count = AppUartRx_GetUartErrorCount();
 		g_protocol_error_count = AppUartRx_GetProtocolErrorCount();
-		AppTelemetryTx_Poll();
-		g_telemetry_sent_count = AppTelemetryTx_GetSentCount();
-		g_telemetry_overwrite_count =
-			AppTelemetryTx_GetOverwriteCount();
-		g_telemetry_error_count = AppTelemetryTx_GetErrorCount();
+		AppImu_Poll();
+		if (g_telemetry_tx_started != 0U)
+		{
+			AppTelemetryTx_Poll();
+			g_telemetry_sent_count = AppTelemetryTx_GetSentCount();
+			g_telemetry_overwrite_count =
+				AppTelemetryTx_GetOverwriteCount();
+			g_telemetry_error_count = AppTelemetryTx_GetErrorCount();
+		}
 
 		/*
 		 * 现在只在 Keil Watch 窗口观察 g_guard_state 和 g_measurement。
@@ -617,7 +726,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_13;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  }
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
