@@ -53,6 +53,8 @@ typedef struct
     uint8_t velocity_history_head;
     uint8_t velocity_history_count;
 
+    int16_t target_x;
+    uint16_t equilibrium_pulse_us;
     int16_t error_px;
     float velocity_px_s;
     float p_term_us;
@@ -67,7 +69,9 @@ typedef enum
     BALL_MEAS_ACCEPTED = 0,
     BALL_MEAS_DUPLICATE,
     BALL_MEAS_INVALID,
-    BALL_MEAS_INVALID_DT
+    BALL_MEAS_INVALID_DT,
+    /* 位置相对上一有效帧跳变超限，丢弃本帧但不破坏差分历史。 */
+    BALL_MEAS_REJECTED
 } BallMeasurementResult;
 
 /* 初始化或彻底清除控制器历史，输出回到暂定中位。 */
@@ -75,7 +79,44 @@ void BallController_Init(BallController *controller);
 void BallController_Reset(BallController *controller);
 
 /*
+ * 设置任意位置目标和该位置对应的静态平衡PWM，并返回限幅后的真实值。
+ * target_x限制在视觉闭环安全区；equilibrium_pulse_us限制在闭环软限幅。
+ */
+int16_t BallController_SetTargetX(
+    BallController *controller,
+    int16_t target_x
+);
+
+/*
+ * 第三题参考轨迹专用接口：更新PID参考位置，但保留当前积分状态。
+ * 只能用于已经经过限速的连续参考，不能拿它处理人工的大幅目标阶跃。
+ */
+int16_t BallController_TrackTargetX(
+    BallController *controller,
+    int16_t target_x
+);
+
+/*
+ * 切换第三题步骤时调用一次：清除只属于旧目标的I和静摩擦慢状态，
+ * 但保留视觉位置、速度和时间历史。
+ */
+void BallController_ResetTargetSlowState(BallController *controller);
+
+/*
+ * 短暂丢球恢复后调用：清除位置差分历史，避免基于长时间间隔的旧位置
+ * 计算速度尖峰。不清除积分、目标和平衡PWM。
+ */
+void BallController_ClearVelocityHistory(BallController *controller);
+
+uint16_t BallController_SetEquilibriumPulseUs(
+    BallController *controller,
+    uint16_t equilibrium_pulse_us
+);
+
+/*
  * 接收一帧新的视觉测量，并更新位置、速度估计。
+ * 位置误差由本控制器使用target_x - ball_x本地计算；UART中的error_px
+ * 仅保留协议兼容性，不再决定STM32控制目标。
  *
  * 仅当frame_id变化时才做位置差分；重复帧不会重复计算速度。
  * 本函数不计算新的PWM目标，供视觉测量到达时调用。
@@ -112,7 +153,8 @@ bool BallController_Step(
 /*
  * 位置PID接口。积分只在收到新视觉帧后，按该帧真实dt更新一次：
  * - 重复frame_id或控制任务空跑时不重复积分；
- * - 超出积分作用区或进入中心死区时暂停并保留I；
+ * - 误差位于积分区内时按完整Ki积分；
+ * - 超出积分误差区时暂停积分并保留当前I；
  * - Ki设为0或guard复位时清零；
  * - 积分项具有独立限幅，PWM饱和且积分继续推向饱和时执行抗饱和回退。
  */

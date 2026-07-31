@@ -26,6 +26,7 @@ from media.media import MediaManager
 from media.sensor import Sensor
 
 import config
+from communication.telemetry_logger import TelemetryLogger
 from communication.uart import VisionUart
 from control.filter import ExponentialFilter
 from utils.logger import DebugFrameSaver, log_error, log_info
@@ -49,17 +50,18 @@ CALIBRATION_MODE = False
 TUNE_GRAYSCALE_ENABLED = True
 
 # 当前相机高度下的近水平球心约为：
-# 左视野边缘(22,308)、机械中点(322,312)、右视野边缘(624,312)。
+# 标尺实测：左端球心x=22对应-11.6 cm，物理中心x=314，
+# 右端球心x=622对应+11.8 cm。
 #
 # 傻瓜裁剪接口：只修改WIDTH和HEIGHT。
-# 程序始终围绕实测轨道中心(322,312)自动计算裁剪起点，并自动生成ROI。
+# 程序始终围绕当前相机安装位置生成裁剪画面；球杆控制零点单独使用x=314。
 # 为避免K230裁剪/显示缓冲条纹，输入值会自动向下对齐到16的倍数。
 # 例如WIDTH填600会实际使用592；HEIGHT填150会实际使用144。
 TUNE_CROP_ENABLED = True
-TUNE_VIEW_CENTER_X = 322
-TUNE_VIEW_CENTER_Y = 312
+TUNE_VIEW_CENTER_X = 320
+TUNE_VIEW_CENTER_Y = 290
 TUNE_VIEW_WIDTH = 640
-TUNE_VIEW_HEIGHT = 106
+TUNE_VIEW_HEIGHT = 76
 TUNE_VIEW_ALIGNMENT = 16
 
 # 检测ROI默认等于整个自动裁剪画面，不需要跟着WIDTH/HEIGHT修改。
@@ -85,10 +87,10 @@ TUNE_CIRCLE_PARAM2 = 20
 TUNE_CIRCLE_MIN_RADIUS = 8
 TUNE_CIRCLE_MAX_RADIUS = 35
 
-# 默认关闭循环日志，避免串口/IDE控制台输出拖慢视觉循环。
-# 临时调试时改为True；此时每60帧只打印一行精简状态。
-TUNE_CONSOLE_ENABLED = False
-TUNE_CONSOLE_INTERVAL_FRAMES = 60
+# 循环日志会占用少量运行时间；重新标定时开启，每10帧打印一行精简状态。
+# 标定完成后可改回False，视觉UART发送不受这个开关影响。
+TUNE_CONSOLE_ENABLED = True
+TUNE_CONSOLE_INTERVAL_FRAMES = 10
 
 # -----------------------------------------------------------------------------
 # 动态跟踪与滤波参数
@@ -113,11 +115,24 @@ TUNE_BALL_TRACK_LOST_RESET_FRAMES = 3
 # ★★★ 改为 0.55，适应 90 FPS，增强平滑 ★★★
 TUNE_BALL_FILTER_ALPHA = 0.55
 
-# 新支架三点实测得到的物理中心和暂定安全边界。
-# 当前相机画面右侧是固定端，左侧是舵机驱动端。
-TUNE_BALL_TARGET_X = 322
-TUNE_BALL_SAFE_LEFT_X = 30
-TUNE_BALL_SAFE_RIGHT_X = 610
+# 速度外推预测参数（检测可信度门限）。
+# 检测圆心相对"上一帧位置+速度外推"偏移超过GATE时判为误检，改用预测
+# 位置保持，不让单帧错误直接打进控制器。90 FPS下钢球每帧只移动数像素。
+TUNE_BALL_PREDICT_GATE_PX = 20
+TUNE_BALL_PREDICT_VELOCITY_ALPHA = 0.40
+TUNE_BALL_PREDICT_V_MAX_PX_S = 600
+
+# 重新捕获确认：被追丢后新候选连续几帧在容差内一致才接受。
+# 防止反光圆在失球后直接成为新目标。
+TUNE_BALL_ACQUIRE_CONFIRM_FRAMES = 3
+TUNE_BALL_ACQUIRE_CONFIRM_TOLERANCE_PX = 12
+
+# 新支架三点实测得到的物理中心和控制边界。
+# 当前相机画面右侧是固定端，左侧是舵机驱动端；x=22～622是实测仍能
+# 检测到完整钢球圆心的范围。K230和STM32必须使用完全相同的边界。
+TUNE_BALL_TARGET_X = 314
+TUNE_BALL_SAFE_LEFT_X = 22
+TUNE_BALL_SAFE_RIGHT_X = 622
 
 
 def _apply_field_tuning():
@@ -188,6 +203,13 @@ def _apply_field_tuning():
     config.BALL_TRACK_MAX_RADIUS_CHANGE = int(TUNE_BALL_TRACK_MAX_RADIUS_CHANGE)
     config.BALL_TRACK_LOST_RESET_FRAMES = int(TUNE_BALL_TRACK_LOST_RESET_FRAMES)
     config.BALL_FILTER_ALPHA = float(TUNE_BALL_FILTER_ALPHA)
+    config.BALL_PREDICT_GATE_PX = int(TUNE_BALL_PREDICT_GATE_PX)
+    config.BALL_PREDICT_VELOCITY_ALPHA = float(TUNE_BALL_PREDICT_VELOCITY_ALPHA)
+    config.BALL_PREDICT_V_MAX_PX_S = float(TUNE_BALL_PREDICT_V_MAX_PX_S)
+    config.BALL_ACQUIRE_CONFIRM_FRAMES = int(TUNE_BALL_ACQUIRE_CONFIRM_FRAMES)
+    config.BALL_ACQUIRE_CONFIRM_TOLERANCE_PX = int(
+        TUNE_BALL_ACQUIRE_CONFIRM_TOLERANCE_PX
+    )
     config.BALL_TARGET_X = int(TUNE_BALL_TARGET_X)
     config.BALL_SAFE_LEFT_X = int(TUNE_BALL_SAFE_LEFT_X)
     config.BALL_SAFE_RIGHT_X = int(TUNE_BALL_SAFE_RIGHT_X)
@@ -310,6 +332,11 @@ def _create_detector():
         max_jump_px=config.BALL_TRACK_MAX_JUMP_PX,
         max_radius_change=config.BALL_TRACK_MAX_RADIUS_CHANGE,
         lost_reset_frames=config.BALL_TRACK_LOST_RESET_FRAMES,
+        predict_gate_px=config.BALL_PREDICT_GATE_PX,
+        velocity_alpha=config.BALL_PREDICT_VELOCITY_ALPHA,
+        v_max_px_s=config.BALL_PREDICT_V_MAX_PX_S,
+        acquire_confirm_frames=config.BALL_ACQUIRE_CONFIRM_FRAMES,
+        acquire_confirm_tolerance_px=config.BALL_ACQUIRE_CONFIRM_TOLERANCE_PX,
         use_grayscale=config.BALL_GRAYSCALE_ENABLED,
     )
 
@@ -319,20 +346,25 @@ def _add_control_measurement(result, position_filter):
 
     重要原则：
     - 安全判断使用本帧原始位置，避免滤波延迟掩盖越界；
-    - 控制误差使用滤波位置，降低霍夫圆中心约±2 px的静止抖动；
-    - 检测失败立即清空滤波器并返回None，绝不输出上一帧旧误差。
+    - 控制误差使用检测器估计位置（可信帧再过一次指数滤波）；
+    - 预测保持帧（extrapolated）直接使用估计位置，不再二次滤波；
+    - 只有真正失球（返回None）才清空滤波器。
     """
     if result is None:
         position_filter.reset()
         return None
 
+    crop_offset = config.CROP_X if config.CROP_ENABLED else 0
     local_x = result["center"][0]
-    raw_x = (
-        local_x + config.CROP_X
-        if config.CROP_ENABLED
-        else local_x
-    )
-    filtered_value = position_filter.update(raw_x)
+    raw_x = local_x + crop_offset
+    local_est_x = result["est_x"]
+    est_global_x = local_est_x + crop_offset
+
+    if result["extrapolated"]:
+        # 预测保持帧：直接使用外推估计，不再二次滤波，避免额外延迟。
+        filtered_value = float(est_global_x)
+    else:
+        filtered_value = position_filter.update(est_global_x)
 
     # 图像坐标均为非负数，+0.5后取整可得到最接近的整数像素。
     # 保持后续UART和STM32处理全部使用整数，避免不必要的浮点传输。
@@ -397,7 +429,7 @@ def _draw_status(image, result, fps, grayscale):
             color=reference_color, thickness=1,
         )
 
-        # 粗线表示旧支架的目标x=361，只用于比较改架前后的偏移。
+        # 粗线表示当前实测物理中心/控制目标x=314。
         image.draw_line(
             config.BALL_TARGET_X, 0,
             config.BALL_TARGET_X, config.CAMERA_HEIGHT - 1,
@@ -459,10 +491,12 @@ def _print_result(result, fps):
         )
         return
 
+    marker = "ext" if result["extrapolated"] else "det"
     print(
-        "ball_valid=1 ball_safe={} raw_x={} filtered_x={} "
+        "ball_valid=1 ball_safe={} {} raw_x={} filtered_x={} "
         "error_px={} radius={} fps={:.1f}".format(
             1 if result["ball_safe"] else 0,
+            marker,
             result["raw_x"],
             result["filtered_x"],
             result["error_px"],
@@ -476,6 +510,7 @@ def run():
     """初始化摄像头/LCD/UART，循环检测并发送钢球测量。"""
     sensor = None
     vision_uart = None
+    telemetry_logger = None
     media_initialized = False
     display_initialized = False
 
@@ -504,6 +539,7 @@ def run():
     )
     clock = time.clock()
     frame_count = 0
+    telemetry_status_count = 0
 
     try:
         vision_uart = VisionUart(
@@ -512,6 +548,16 @@ def run():
             tx_pin=config.UART_TX_PIN,
             rx_pin=config.UART_RX_PIN,
             enabled=config.UART_ENABLED,
+        )
+        telemetry_logger = TelemetryLogger(
+            path=config.TELEMETRY_LOG_PATH,
+            rx_chunk=config.TELEMETRY_RX_BUFFER_SIZE,
+            write_block=config.TELEMETRY_WRITE_BUFFER_SIZE,
+            sync_interval=config.TELEMETRY_SYNC_INTERVAL_BLOCKS,
+            enabled=(
+                config.TELEMETRY_LOG_ENABLED
+                and config.UART_ENABLED
+            ),
         )
 
         sensor = Sensor(width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
@@ -566,6 +612,11 @@ def run():
                     result["filtered_x"],
                 )
 
+            # 同一组UART引脚是全双工的：
+            # K230刚刚从IO9发送视觉数据后，立即非阻塞读取IO10上已经到达的
+            # STM32遥测字节。poll()只消费现有字节，不会等待，不改变视觉节拍。
+            telemetry_logger.poll(vision_uart)
+
             if config.BALL_GRAYSCALE_ENABLED:
                 # 直接在1字节/像素的灰度Sensor帧上画灰度标记。
                 # 不调用to_rgb565()，因此没有灰度缓冲扩展和额外整帧转换。
@@ -603,6 +654,16 @@ def run():
             if result is not None:
                 debug_saver.save_if_due(display_frame)
 
+            telemetry_status_count += 1
+            if (
+                telemetry_logger is not None
+                and config.TELEMETRY_LOG_ENABLED
+                and telemetry_status_count
+                >= config.TELEMETRY_STATUS_INTERVAL_FRAMES
+            ):
+                print(telemetry_logger.status())
+                telemetry_status_count = 0
+
             frame_count += 1
             if frame_count >= config.GC_INTERVAL_FRAMES:
                 gc.collect()
@@ -615,6 +676,12 @@ def run():
         log_error("Fatal error: {}".format(exc))
         raise
     finally:
+        # 先关闭日志，把最后不足1 KB的尾部帧写入TF卡；再释放UART。
+        if telemetry_logger is not None:
+            try:
+                telemetry_logger.close()
+            except BaseException:
+                pass
         if vision_uart is not None:
             try:
                 vision_uart.deinit()

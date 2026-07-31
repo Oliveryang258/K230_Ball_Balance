@@ -44,18 +44,120 @@ void BallController_Reset(BallController *controller)
     controller->last_dt_ms = 0U;
     controller->velocity_history_head = 0U;
     controller->velocity_history_count = 0U;
+    controller->target_x = BALL_CONTROL_DEFAULT_TARGET_X;
+    controller->equilibrium_pulse_us =
+        BALL_CONTROL_DEFAULT_HOLD_PWM_US;
     controller->error_px = 0;
     controller->velocity_px_s = 0.0f;
     controller->p_term_us = 0.0f;
     controller->i_term_us = 0.0f;
     controller->d_term_us = 0.0f;
     controller->control_offset_us = 0.0f;
-    controller->target_pulse_us = SERVO_PWM_NEUTRAL_US;
+    controller->target_pulse_us =
+        controller->equilibrium_pulse_us;
 }
 
 void BallController_Init(BallController *controller)
 {
     BallController_Reset(controller);
+}
+
+static int16_t set_target_x(
+    BallController *controller,
+    int16_t target_x,
+    bool reset_slow_state
+)
+{
+    if (target_x < VISION_SAFE_X_MIN)
+    {
+        target_x = VISION_SAFE_X_MIN;
+    }
+    else if (target_x > VISION_SAFE_X_MAX)
+    {
+        target_x = VISION_SAFE_X_MAX;
+    }
+
+    if (controller != 0)
+    {
+        /*
+         * 目标点发生变化时，旧目标下积累的 I 项不能继续作用于新目标。
+         * 这里只清除与旧目标绑定的慢状态，不清除视觉位置和速度历史，
+         * 因此下一个 50 Hz 控制周期仍可立即使用当前速度。
+         */
+        if (reset_slow_state &&
+            (target_x != controller->target_x))
+        {
+            BallController_ResetTargetSlowState(controller);
+        }
+
+        controller->target_x = target_x;
+        if (controller->has_history)
+        {
+            controller->error_px =
+                (int16_t)(target_x - controller->last_ball_x);
+        }
+    }
+    return target_x;
+}
+
+int16_t BallController_SetTargetX(
+    BallController *controller,
+    int16_t target_x
+)
+{
+    return set_target_x(controller, target_x, true);
+}
+
+int16_t BallController_TrackTargetX(
+    BallController *controller,
+    int16_t target_x
+)
+{
+    return set_target_x(controller, target_x, false);
+}
+
+void BallController_ResetTargetSlowState(BallController *controller)
+{
+    if (controller == 0)
+    {
+        return;
+    }
+
+    controller->i_term_us = 0.0f;
+}
+
+void BallController_ClearVelocityHistory(BallController *controller)
+{
+    if (controller == 0)
+    {
+        return;
+    }
+
+    controller->has_history = false;
+    controller->velocity_history_head = 0U;
+    controller->velocity_history_count = 0U;
+}
+
+uint16_t BallController_SetEquilibriumPulseUs(
+    BallController *controller,
+    uint16_t equilibrium_pulse_us
+)
+{
+    if (equilibrium_pulse_us < BALL_CONTROL_PWM_MIN_US)
+    {
+        equilibrium_pulse_us = BALL_CONTROL_PWM_MIN_US;
+    }
+    else if (equilibrium_pulse_us > BALL_CONTROL_PWM_MAX_US)
+    {
+        equilibrium_pulse_us = BALL_CONTROL_PWM_MAX_US;
+    }
+
+    if (controller != 0)
+    {
+        controller->equilibrium_pulse_us =
+            equilibrium_pulse_us;
+    }
+    return equilibrium_pulse_us;
 }
 
 BallMeasurementResult BallController_AcceptMeasurementEx(
@@ -103,7 +205,25 @@ BallMeasurementResult BallController_AcceptMeasurementEx(
         return BALL_MEAS_DUPLICATE;
     }
 
-    controller->error_px = measurement->error_px;
+    /*
+     * 最后一层跳变防御：位置相对上一有效帧相差过大时丢弃本帧。
+     * K230已做速度外推过滤，正常帧位置连续，这里只拦截通信错误或
+     * K230端遗漏的异常帧。必须在写入error_px/环形历史之前返回，
+     * 这样不更新last_ball_x，下一帧仍可与上一有效帧正常差分。
+     */
+    if (controller->has_history &&
+        ((measurement->ball_x >
+          controller->last_ball_x +
+          (int16_t)BALL_CONTROL_REJECT_JUMP_PX) ||
+         (measurement->ball_x <
+          controller->last_ball_x -
+          (int16_t)BALL_CONTROL_REJECT_JUMP_PX)))
+    {
+        return BALL_MEAS_REJECTED;
+    }
+
+    controller->error_px =
+        (int16_t)(controller->target_x - measurement->ball_x);
 
     /*
      * 第一帧没有前一位置，速度定义为 0。
@@ -276,7 +396,7 @@ bool BallController_StepPid(
     controller->d_term_us = -kv_us_per_px_s * controller->velocity_px_s;
 
     /*
-     * 位置I只消费“新视觉测量”事件，不按50 Hz对同一帧反复累计。
+     * 位置I只消费”新视觉测量”事件，不按50 Hz对同一帧反复累计。
      *
      * 积分分离采用“暂停但保留”：
      * - 中心死区内不继续积分，但保留维持静态平衡所需的I；
@@ -286,13 +406,16 @@ bool BallController_StepPid(
      * 只有Ki被明确设为0，或上层guard调用BallController_Reset()时才清零。
      */
     previous_i_term_us = controller->i_term_us;
+
     if (ki_us_per_px_s <= 0.0f)
     {
         controller->i_term_us = 0.0f;
     }
     else if ((effective_error_px != 0) &&
-             (effective_error_px >= -BALL_CONTROL_INTEGRAL_ZONE_PX) &&
-             (effective_error_px <= BALL_CONTROL_INTEGRAL_ZONE_PX) &&
+             (effective_error_px >=
+              -BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX) &&
+             (effective_error_px <=
+              BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX) &&
              controller->updated &&
              (controller->last_dt_ms >= BALL_CONTROL_MIN_SAMPLE_MS) &&
              (controller->last_dt_ms <= BALL_CONTROL_MAX_SAMPLE_MS))
@@ -323,7 +446,7 @@ bool BallController_StepPid(
          controller->d_term_us);
 
     requested_pulse_us =
-        (int32_t)SERVO_PWM_NEUTRAL_US +
+        (int32_t)controller->equilibrium_pulse_us +
         round_float_to_i32(controller->control_offset_us);
     controller->target_pulse_us =
         clamp_control_pulse(requested_pulse_us, &controller->saturated);
@@ -348,7 +471,7 @@ bool BallController_StepPid(
              controller->i_term_us +
              controller->d_term_us);
         requested_pulse_us =
-            (int32_t)SERVO_PWM_NEUTRAL_US +
+            (int32_t)controller->equilibrium_pulse_us +
             round_float_to_i32(controller->control_offset_us);
         controller->target_pulse_us =
             clamp_control_pulse(requested_pulse_us, &controller->saturated);
