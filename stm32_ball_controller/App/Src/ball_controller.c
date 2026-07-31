@@ -55,6 +55,8 @@ void BallController_Reset(BallController *controller)
     controller->control_offset_us = 0.0f;
     controller->target_pulse_us =
         controller->equilibrium_pulse_us;
+    controller->integral_limit_us =
+        (float)BALL_CONTROL_INTEGRAL_MAX_US;
 }
 
 void BallController_Init(BallController *controller)
@@ -124,6 +126,33 @@ void BallController_ResetTargetSlowState(BallController *controller)
     }
 
     controller->i_term_us = 0.0f;
+}
+
+void BallController_ClearIntegral(BallController *controller)
+{
+    if (controller == 0)
+    {
+        return;
+    }
+
+    controller->i_term_us = 0.0f;
+}
+
+void BallController_SetIntegralLimit(
+    BallController *controller,
+    float limit_us
+)
+{
+    if (controller == 0)
+    {
+        return;
+    }
+
+    if (limit_us < 0.0f)
+    {
+        limit_us = 0.0f;
+    }
+    controller->integral_limit_us = limit_us;
 }
 
 void BallController_ClearVelocityHistory(BallController *controller)
@@ -426,13 +455,13 @@ bool BallController_StepPid(
             ((float)controller->last_dt_ms / 1000.0f);
         controller->i_term_us += integral_delta_us;
 
-        if (controller->i_term_us > BALL_CONTROL_INTEGRAL_MAX_US)
+        if (controller->i_term_us > controller->integral_limit_us)
         {
-            controller->i_term_us = BALL_CONTROL_INTEGRAL_MAX_US;
+            controller->i_term_us = controller->integral_limit_us;
         }
-        else if (controller->i_term_us < -BALL_CONTROL_INTEGRAL_MAX_US)
+        else if (controller->i_term_us < -controller->integral_limit_us)
         {
-            controller->i_term_us = -BALL_CONTROL_INTEGRAL_MAX_US;
+            controller->i_term_us = -controller->integral_limit_us;
         }
         may_integrate = true;
     }

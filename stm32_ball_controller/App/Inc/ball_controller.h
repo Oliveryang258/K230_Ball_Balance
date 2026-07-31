@@ -62,6 +62,13 @@ typedef struct
     float d_term_us;
     float control_offset_us;
     uint16_t target_pulse_us;
+
+    /*
+     * 积分项的独立限幅（us）。默认取 BALL_CONTROL_INTEGRAL_MAX_US，
+     * 发车相位 READY 阶段由 main.c 通过 SetIntegralLimit 临时收为 0，
+     * 使积分冻结，避免停车等待期积累的 I 项在起步瞬间把球推偏。
+     */
+    float integral_limit_us;
 } BallController;
 
 typedef enum
@@ -107,6 +114,21 @@ void BallController_ResetTargetSlowState(BallController *controller);
  * 计算速度尖峰。不清除积分、目标和平衡PWM。
  */
 void BallController_ClearVelocityHistory(BallController *controller);
+
+/*
+ * 清零积分项。用于发车边沿、进入READY相位等需要抛弃历史I的场景。
+ * 不清除位置、速度、目标和平衡PWM。
+ */
+void BallController_ClearIntegral(BallController *controller);
+
+/*
+ * 设置积分项独立限幅（us）。限幅值被钳位到 >= 0。
+ * 传入0.0f相当于冻结积分；传入BALL_CONTROL_INTEGRAL_MAX_US恢复默认行为。
+ */
+void BallController_SetIntegralLimit(
+    BallController *controller,
+    float limit_us
+);
 
 uint16_t BallController_SetEquilibriumPulseUs(
     BallController *controller,

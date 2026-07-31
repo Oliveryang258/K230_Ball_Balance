@@ -61,7 +61,7 @@
  * 重新校准必须从1510 us附近逐步向两侧扩展；出现持续嗡鸣、电流上升、
  * 发热或机构顶死时立即断电。完成带连杆标定后应重新收紧上下限。
  */
-#define SERVO_PWM_NEUTRAL_US       1410U
+#define SERVO_PWM_NEUTRAL_US       1440U
 #define SERVO_PWM_TEST_MIN_US      810U
 #define SERVO_PWM_TEST_MAX_US      2010U
 
@@ -175,17 +175,22 @@
 #define BALL_CONTROL_DEFAULT_HOLD_PWM_US     SERVO_PWM_NEUTRAL_US
 
 /*
- * 车辆直线运动题专用的固定PWM前馈。
+ * 车辆直线运动固定偏置前馈（cruise FF）。
  *
- * 当前实测钢球在固定行驶方向上稳定偏到error约-12 px。按照
- * direction=-1、Kp=2.7 us/px估算，原P项提供的纠偏约为+32 us，
- * 因此先用+32 us作为巡航前馈初值。
+ * 与AF分工：AF补偿瞬时加速度，cruise_ff补偿车辆稳定行驶造成的固定偏置
+ * （车身倾斜、重心偏移、轮胎驱动力导致的平台偏转）。这类偏置随速度方向
+ * 存在但不一定与瞬时加速度相关，长期由积分项扛着（实测平均I约+60 us，
+ * 其中包含噪声和弯道残差，不能全部搬进前馈）。
  *
- * 该补偿不改变物理目标坐标，也不参与第三题。运行时通过
- * g_cruise_ff_enabled开启；第三题状态机一旦启动，main.c会自动旁路它。
+ * 生效条件：第三题IDLE 且 运动链路有效 且 motion_state==STRAIGHT。
+ * 起步、转弯、停车、初始化期间为0——转弯已由YF/turn preview/AF覆盖，
+ * 不再叠加。
+ *
+ * 初值25 us，运行时可改Watch变量g_cruise_ff_us；g_cruise_ff_enabled
+ * 置0可整体关闭。加入后应观察：直线平均I下降、直线偏置减小、转弯不退化。
  */
-#define BALL_CONTROL_DEFAULT_CRUISE_FF_ENABLED   0U
-#define BALL_CONTROL_DEFAULT_CRUISE_FF_US        0
+#define BALL_CONTROL_DEFAULT_CRUISE_FF_ENABLED   1U
+#define BALL_CONTROL_DEFAULT_CRUISE_FF_US        25
 
 /*
  * 轨道方向加速度前馈。
@@ -200,9 +205,23 @@
  *   g_af_lim 软限幅，单位us
  *   g_af     本周期实际采用的前馈，单位us，只读
  */
-#define BALL_CONTROL_DEFAULT_KAF_US_PER_MG       2.5f
-#define BALL_CONTROL_DEFAULT_AF_LIMIT_US         70.0f
+#define BALL_CONTROL_DEFAULT_KAF_US_PER_MG       2.2f
+#define BALL_CONTROL_DEFAULT_AF_LIMIT_US         60.0f
 #define BALL_CONTROL_AF_HARD_LIMIT_US            80.0f
+
+/*
+ * 加速度前馈按运动阶段加权（gain scheduling）。
+ *
+ * 实车CSV实测：右转入弯阶段CH32上报的纵向加速度会与P项纠正反向
+ * （例：ball=304 err=+14 P=+49 acc_track=-16 af=-25），AF此时削弱
+ * 纠正、把球压向外侧；直线匀速段acc_track仍带倾角耦合分量。
+ * 因此右转默认降权，直线与起停保留全权重。三个值都可在Keil Watch
+ * 通过g_af_w_straight/g_af_w_turn/g_af_w_start_stop现场调整，
+ * 全部置1.0即等价于旧的固定Kaf。
+ */
+#define BALL_CONTROL_DEFAULT_AF_W_STRAIGHT      1.0f
+#define BALL_CONTROL_DEFAULT_AF_W_TURN          0.5f
+#define BALL_CONTROL_DEFAULT_AF_W_START_STOP    1.0f
 
 /*
  * 加速度前馈的第二级EMA低通（CH32已做第一级α=0.25）。
@@ -311,7 +330,24 @@
  * Guard复位或Ki设为0时清零。转弯期间由TURN_INTEGRAL_HANDOVER接管限幅。
  */
 #define BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX     80
-#define BALL_CONTROL_INTEGRAL_MAX_US              90.0f
+#define BALL_CONTROL_INTEGRAL_MAX_US             50.0f
+
+/*
+ * 发车前积分冻结与发车边沿清积分（launch phase integral management）。
+ *
+ * 只有 CH32 运动链路有效且第三题未运行时启用，不影响既有台架/第三题行为：
+ * - READY：车辆 STOPPED 且球位置误差、速度同时满足稳定判据并持续
+ *   PHASE_STABLE_HOLD_MS，积分清零并通过 SetIntegralLimit(0) 冻结；
+ * - RUN：车辆进入 STARTING..STOPPING 任一状态即恢复完整积分限幅；
+ * - 每次 停车→运动（发车边沿）强制清零一次积分，防止停车等待期积累的
+ *   I 项在起步瞬间把球推偏。
+ *
+ * 运动链路无效（台架/无CH32）或第三题运行期间强制保持普通积分行为。
+ */
+#define BALL_CONTROL_LAUNCH_PHASE_ENABLED        1U
+#define BALL_CONTROL_PHASE_STABLE_ERROR_PX       15
+#define BALL_CONTROL_PHASE_STABLE_SPEED_PX_S     40.0f
+#define BALL_CONTROL_PHASE_STABLE_HOLD_MS        500U
 
 /*
  * STM32固定周期控制任务。
@@ -342,7 +378,7 @@
  */
 #define BALL_CONTROL_DEFAULT_APPLY_OUTPUT  1U
 #define BALL_CONTROL_DEFAULT_KP_US_PER_PX  3.5f
-#define BALL_CONTROL_DEFAULT_KI_US_PER_PX_S 1.5f
+#define BALL_CONTROL_DEFAULT_KI_US_PER_PX_S 0.8f
 #define BALL_CONTROL_DEFAULT_KV_US_PER_PX_S 0.9f
 #define BALL_CONTROL_DEFAULT_DIRECTION     (-1)
 

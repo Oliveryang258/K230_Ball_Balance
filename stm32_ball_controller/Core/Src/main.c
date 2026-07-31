@@ -36,6 +36,17 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+/*
+ * 发车前积分相位：
+ * - RUN：车辆运动中或尚未进入READY，使用完整积分；
+ * - READY：车辆停止且球稳定，积分清零并冻结，等待发车。
+ */
+typedef enum
+{
+    CONTROL_PHASE_RUN = 0,
+    CONTROL_PHASE_READY = 1
+} ControlPhase;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -167,19 +178,27 @@ volatile uint8_t g_cruise_ff_enabled =
     BALL_CONTROL_DEFAULT_CRUISE_FF_ENABLED;
 volatile int16_t g_cruise_ff_us =
     BALL_CONTROL_DEFAULT_CRUISE_FF_US;
+volatile int16_t g_cruise_ff_active_us = 0;
 volatile uint16_t g_effective_hold_pwm_us =
     BALL_CONTROL_DEFAULT_HOLD_PWM_US;
 
 /*
  * 加速度前馈使用短变量名，方便放入Keil Watch：
- *   g_kaf    前馈增益，单位us/mg；改成0即可关闭
- *   g_af_lim 前馈软限幅，单位us
- *   g_af     本周期实际采用的前馈，单位us，只读
+ *   g_kaf           前馈增益，单位us/mg；改成0即可关闭
+ *   g_af_lim        前馈软限幅，单位us
+ *   g_af_w_straight 直线段权重，1.0=不降权
+ *   g_af_w_turn     左右弯权重，右转实测需降权
+ *   g_af_w_start_stop 起步/停车权重
+ *   g_af            本周期实际采用的前馈，单位us，只读
  *
  * 不再设置单独的enable变量，现场关闭前馈时只需要把g_kaf改成0。
+ * 三个状态权重全部置1.0即等价于旧的固定Kaf。
  */
 volatile float g_kaf = BALL_CONTROL_DEFAULT_KAF_US_PER_MG;
 volatile float g_af_lim = BALL_CONTROL_DEFAULT_AF_LIMIT_US;
+volatile float g_af_w_straight = BALL_CONTROL_DEFAULT_AF_W_STRAIGHT;
+volatile float g_af_w_turn = BALL_CONTROL_DEFAULT_AF_W_TURN;
+volatile float g_af_w_start_stop = BALL_CONTROL_DEFAULT_AF_W_START_STOP;
 volatile float g_af = 0.0f;
 
 /*
@@ -566,6 +585,11 @@ void AppControl_On1msTick(void)
     static bool     s_lost_grace_active = false;
     static uint16_t s_last_valid_target_us = SERVO_PWM_NEUTRAL_US;
     static bool     s_lost_recovery_pending = false;
+#if BALL_CONTROL_LAUNCH_PHASE_ENABLED != 0U
+    static ControlPhase s_control_phase = CONTROL_PHASE_RUN;
+    static uint32_t     s_phase_stable_ms = 0U;
+    static uint8_t      s_phase_motion_active_prev = 0U;
+#endif
     AppUartRxSnapshot rx_snapshot;
     AppMotionRxSnapshot motion_snapshot;
     BallMeasurementResult measurement_result = BALL_MEAS_INVALID;
@@ -852,23 +876,32 @@ void AppControl_On1msTick(void)
      * 固定巡航前馈只改变PWM平衡基准，不篡改314/190/440等物理目标坐标。
      * 第三题从RUNNING直到COMPLETE/TIMEOUT都不允许叠加车辆运动补偿。
      *
-     * 当前尚未接入车辆启动命令，因此运动题开始前可在Watch中把
-     * g_cruise_ff_enabled设为1；停车调参或做第三题时设为0。
+     * 仅当运动链路有效且车辆处于直线行驶（motion_state==STRAIGHT）时输出：
+     * 起步、转弯、停车、初始化期间为0，转弯已由YF/turn preview/AF覆盖。
+     * g_cruise_ff_active_us是只读Watch值，表示本周期实际叠加的前馈量。
      */
 #if TASK3_SEQUENCE_ENABLED != 0U
     if ((Task3Sequence_GetState(&s_task3_sequence) ==
          TASK3_SEQUENCE_IDLE) &&
-        (g_cruise_ff_enabled != 0U))
+        (g_cruise_ff_enabled != 0U) &&
+        (g_motion_link_valid != 0U) &&
+        (g_motion_measurement.motion_state ==
+         CH32_MOTION_STATE_STRAIGHT))
 #else
-    if (g_cruise_ff_enabled != 0U)
+    if ((g_cruise_ff_enabled != 0U) &&
+        (g_motion_link_valid != 0U) &&
+        (g_motion_measurement.motion_state ==
+         CH32_MOTION_STATE_STRAIGHT))
 #endif
     {
         hold_pwm =
             (int32_t)g_hold_pwm_us + (int32_t)g_cruise_ff_us;
+        g_cruise_ff_active_us = g_cruise_ff_us;
     }
     else
     {
         hold_pwm = (int32_t)g_hold_pwm_us;
+        g_cruise_ff_active_us = 0;
     }
 
     /*
@@ -906,9 +939,29 @@ void AppControl_On1msTick(void)
             BALL_CONTROL_ACC_EMA_ALPHA * (acc_raw_mg - s_acc_filt_mg);
         g_acc_filt_mg = s_acc_filt_mg;
 
-        g_af_raw_us = g_kaf * s_acc_filt_mg;
-        g_af = AppClampAf(g_af_raw_us, g_af_lim);
-        g_af_clamped_us = g_af;
+        /*
+         * AF按运动阶段加权（gain scheduling）。右转入弯阶段实测纵向
+         * 加速度与P项纠正反向，这里降权后由YF偏航前馈承担弯道补偿。
+         */
+        {
+            float af_weight = g_af_w_start_stop;
+            switch (g_motion_measurement.motion_state)
+            {
+            case CH32_MOTION_STATE_STRAIGHT:
+                af_weight = g_af_w_straight;
+                break;
+            case CH32_MOTION_STATE_TURN_LEFT:
+            case CH32_MOTION_STATE_TURN_RIGHT:
+                af_weight = g_af_w_turn;
+                break;
+            default:
+                af_weight = g_af_w_start_stop;
+                break;
+            }
+            g_af_raw_us = g_kaf * s_acc_filt_mg * af_weight;
+            g_af = AppClampAf(g_af_raw_us, g_af_lim);
+            g_af_clamped_us = g_af;
+        }
     }
 
     /* AF变化率限制，抑制高频抖动直接进入PWM */
@@ -1238,6 +1291,208 @@ void AppControl_On1msTick(void)
         effective_kp = g_task3_kp;
         effective_ki = g_task3_ki;
         effective_kv = g_task3_kv;
+    }
+#endif
+
+#if BALL_CONTROL_LAUNCH_PHASE_ENABLED != 0U
+    /*
+     * 发车前积分管理：
+     * - READY：车辆STOPPED且球在死区内稳定达到HOLD_MS，积分清零并冻结为0；
+     * - RUN：车辆进入STARTING..STOPPING任一状态即恢复完整积分；
+     * - 每次停车→运动的发车边沿强制清零一次积分，防止停车期积累的I项
+     *   在起步瞬间把球推偏。
+     *
+     * 只在运动链路有效且第三题空闲时生效；其余场景保持普通积分行为，
+     * 避免影响台架调试和第三题自动流程。
+     */
+    {
+        uint8_t motion_active = 0U;
+        uint8_t motion_stopped = 0U;
+        uint8_t ball_stable = 0U;
+        uint8_t phase_active = 0U;
+        float phase_limit = (float)BALL_CONTROL_INTEGRAL_MAX_US;
+
+        if (g_motion_link_valid != 0U)
+        {
+            if ((g_motion_measurement.motion_state >= 1U) &&
+                (g_motion_measurement.motion_state <= 5U))
+            {
+                motion_active = 1U;
+            }
+            else if (g_motion_measurement.motion_state == 0U)
+            {
+                motion_stopped = 1U;
+            }
+        }
+
+        if (g_ball_controller.has_history &&
+            (g_ball_controller.error_px >=
+             -BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
+            (g_ball_controller.error_px <=
+             BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
+            (g_ball_controller.velocity_px_s >=
+             -BALL_CONTROL_PHASE_STABLE_SPEED_PX_S) &&
+            (g_ball_controller.velocity_px_s <=
+             BALL_CONTROL_PHASE_STABLE_SPEED_PX_S))
+        {
+            ball_stable = 1U;
+        }
+
+#if TASK3_SEQUENCE_ENABLED != 0U
+        phase_active =
+            (g_motion_link_valid != 0U) &&
+            (Task3Sequence_GetState(&s_task3_sequence) ==
+             TASK3_SEQUENCE_IDLE);
+#else
+        phase_active = (g_motion_link_valid != 0U);
+#endif
+
+        if (phase_active != 0U)
+        {
+            if ((motion_active != 0U) &&
+                (s_phase_motion_active_prev == 0U))
+            {
+                BallController_ClearIntegral(&g_ball_controller);
+                s_control_phase = CONTROL_PHASE_RUN;
+            }
+            s_phase_motion_active_prev = motion_active;
+
+            if ((motion_stopped != 0U) && (ball_stable != 0U))
+            {
+                s_phase_stable_ms += BALL_CONTROL_PERIOD_MS;
+            }
+            else
+            {
+                s_phase_stable_ms = 0U;
+            }
+
+            if ((motion_stopped != 0U) &&
+                (s_phase_stable_ms >= BALL_CONTROL_PHASE_STABLE_HOLD_MS))
+            {
+                BallController_ClearIntegral(&g_ball_controller);
+                s_control_phase = CONTROL_PHASE_READY;
+            }
+            else if (motion_active != 0U)
+            {
+                s_control_phase = CONTROL_PHASE_RUN;
+            }
+
+            if (s_control_phase == CONTROL_PHASE_READY)
+            {
+                phase_limit = 0.0f;
+            }
+        }
+        else
+        {
+            s_control_phase = CONTROL_PHASE_RUN;
+            s_phase_stable_ms = 0U;
+            s_phase_motion_active_prev = motion_active;
+        }
+
+        BallController_SetIntegralLimit(&g_ball_controller, phase_limit);
+    }
+#endif
+
+#if BALL_CONTROL_LAUNCH_PHASE_ENABLED != 0U
+    /*
+     * 发车前积分相位机（仅运动链路有效且第三题未运行时启用）：
+     * - 车辆 STOPPED 且球稳定持续 PHASE_STABLE_HOLD_MS -> READY，
+     *   积分清零并冻结（限幅收为0）；
+     * - 车辆进入 STARTING..STOPPING -> RUN，恢复完整积分限幅；
+     * - 停车->运动边沿强制清零一次积分，避免停车等待期积累的 I 项
+     *   在起步瞬间把球推偏。
+     * 第三题运行、运动链路无效或台架调试时保持 RUN/普通积分，不改变
+     * 既有已验证行为。
+     */
+    {
+        uint8_t motion_active = 0U;
+        uint8_t motion_stopped = 0U;
+        uint8_t ball_stable = 0U;
+        uint8_t phase_active = 0U;
+        float phase_integral_limit = (float)BALL_CONTROL_INTEGRAL_MAX_US;
+
+        if (g_motion_link_valid != 0U)
+        {
+            if ((g_motion_measurement.motion_state >= 1U) &&
+                (g_motion_measurement.motion_state <= 5U))
+            {
+                motion_active = 1U;
+            }
+            else if (g_motion_measurement.motion_state == 0U)
+            {
+                motion_stopped = 1U;
+            }
+        }
+
+        if (g_ball_controller.has_history &&
+            (g_ball_controller.error_px >=
+             -BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
+            (g_ball_controller.error_px <=
+             BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
+            (g_ball_controller.velocity_px_s >=
+             -BALL_CONTROL_PHASE_STABLE_SPEED_PX_S) &&
+            (g_ball_controller.velocity_px_s <=
+             BALL_CONTROL_PHASE_STABLE_SPEED_PX_S))
+        {
+            ball_stable = 1U;
+        }
+
+#if TASK3_SEQUENCE_ENABLED != 0U
+        phase_active =
+            (g_motion_link_valid != 0U) &&
+            (Task3Sequence_GetState(&s_task3_sequence) ==
+             TASK3_SEQUENCE_IDLE);
+#else
+        phase_active = (g_motion_link_valid != 0U);
+#endif
+
+        if (phase_active != 0U)
+        {
+            if ((motion_active != 0U) &&
+                (s_phase_motion_active_prev == 0U))
+            {
+                /* 发车边沿：丢弃停车等待期积累的积分。 */
+                BallController_ClearIntegral(&g_ball_controller);
+                s_control_phase = CONTROL_PHASE_RUN;
+            }
+            s_phase_motion_active_prev = motion_active;
+
+            if ((motion_stopped != 0U) && (ball_stable != 0U))
+            {
+                s_phase_stable_ms += (uint32_t)BALL_CONTROL_PERIOD_MS;
+            }
+            else
+            {
+                s_phase_stable_ms = 0U;
+            }
+
+            if ((motion_stopped != 0U) &&
+                (s_phase_stable_ms >= BALL_CONTROL_PHASE_STABLE_HOLD_MS))
+            {
+                BallController_ClearIntegral(&g_ball_controller);
+                s_control_phase = CONTROL_PHASE_READY;
+            }
+            else if (motion_active != 0U)
+            {
+                s_control_phase = CONTROL_PHASE_RUN;
+            }
+
+            if (s_control_phase == CONTROL_PHASE_READY)
+            {
+                phase_integral_limit = 0.0f;
+            }
+        }
+        else
+        {
+            s_control_phase = CONTROL_PHASE_RUN;
+            s_phase_stable_ms = 0U;
+            s_phase_motion_active_prev = motion_active;
+        }
+
+        BallController_SetIntegralLimit(
+            &g_ball_controller,
+            phase_integral_limit
+        );
     }
 #endif
 
