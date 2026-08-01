@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Node dependencies
+node_modules/
+
 # IDE and editor settings
 .vscode/
 .idea/

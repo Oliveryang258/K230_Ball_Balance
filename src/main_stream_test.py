@@ -46,13 +46,14 @@ STREAM_TEST_CONSOLE_ENABLED = False
 
 STREAM_WIDTH = 640
 STREAM_HEIGHT = 480
-STREAM_TARGET_FPS = 10
-STREAM_JPEG_QUALITY = 36
+STREAM_TARGET_FPS = 20
+STREAM_JPEG_QUALITY = 34
 STREAM_PORT = 8080
 
 # 10 FPS、单客户端、一次视觉循环最多发送16 KB；超过180 ms未发完则断开重连。
 # 此期限只约束图传客户端；UART和视觉在此期间仍按每个主循环正常执行。
 STREAM_SEND_CHUNK_BYTES = 16384
+STREAM_MAX_SEND_CALLS_PER_SERVICE = 3
 STREAM_FRAME_DEADLINE_MS = 180
 STREAM_STATUS_INTERVAL_FRAMES = 180
 STREAM_BOOT_LOG_PATH = "/sdcard/k230_stream_boot.log"
@@ -88,6 +89,7 @@ def _create_streamer():
         jpeg_quality=STREAM_JPEG_QUALITY,
         port=STREAM_PORT,
         send_chunk_bytes=STREAM_SEND_CHUNK_BYTES,
+        max_send_calls_per_service=STREAM_MAX_SEND_CALLS_PER_SERVICE,
         frame_deadline_ms=STREAM_FRAME_DEADLINE_MS,
         # 当前640x480灰度视觉基线约90 FPS；双通道后以实机Sensor日志为准。
         source_fps=90,
