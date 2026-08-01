@@ -85,6 +85,25 @@ def _create_streamer():
     )
 
 
+def _show_startup_message(sensor, text):
+    """在无IDE启动阶段用灰度通道显示一条短状态；失败时静默返回。"""
+    try:
+        status_frame = sensor.snapshot(chn=CAM_CHN_ID_1)
+        if config.CROP_ENABLED:
+            status_frame = status_frame.crop(
+                roi=(
+                    config.CROP_X,
+                    config.CROP_Y,
+                    config.CROP_WIDTH,
+                    config.CROP_HEIGHT,
+                )
+            )
+        status_frame.draw_string_advanced(4, 20, 18, text, color=255)
+        Display.show_image(status_frame)
+    except BaseException:
+        pass
+
+
 def run():
     """运行双通道实验；网络始终低于识别、UART和本地显示优先级。"""
     sensor = None
@@ -110,19 +129,6 @@ def run():
     try:
         if STREAM_TEST_ENABLED:
             streamer = _create_streamer()
-            # Wi-Fi连接可能等待数秒，因此必须在视觉/UART控制启动前完成。
-            streamer.connect_wifi(
-                STREAM_TEST_WIFI_SSID,
-                STREAM_TEST_WIFI_PASSWORD,
-            )
-
-        vision_uart = VisionUart(
-            uart_id=config.UART_ID,
-            baudrate=config.UART_BAUDRATE,
-            tx_pin=config.UART_TX_PIN,
-            rx_pin=config.UART_RX_PIN,
-            enabled=config.UART_ENABLED,
-        )
 
         sensor = Sensor(width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
         sensor.reset()
@@ -161,9 +167,26 @@ def run():
             streamer.start_encoder()
         sensor.run()
         sensor_started = True
+
+        # 先点亮LCD再连接热点，避免20秒连接等待期间被误认为程序完全未启动。
+        time.sleep_ms(200)
         if streamer is not None:
+            _show_startup_message(sensor, "WIFI CONNECTING...")
+            # UART尚未创建，因此热点连接等待不会让实验版输出半截控制数据。
+            streamer.connect_wifi(
+                STREAM_TEST_WIFI_SSID,
+                STREAM_TEST_WIFI_PASSWORD,
+            )
             streamer.start_server()
             stream_lcd_text = "http://{}:{}/".format(streamer.ip, STREAM_PORT)
+
+        vision_uart = VisionUart(
+            uart_id=config.UART_ID,
+            baudrate=config.UART_BAUDRATE,
+            tx_pin=config.UART_TX_PIN,
+            rx_pin=config.UART_RX_PIN,
+            enabled=config.UART_ENABLED,
+        )
 
         time.sleep_ms(config.CAMERA_WARMUP_MS)
         gc.collect()
@@ -252,6 +275,9 @@ def run():
         log_info("Stream test stopped by user")
     except BaseException as exc:
         log_error("Stream test fatal: {}".format(exc))
+        if sensor_started and sensor is not None:
+            _show_startup_message(sensor, "ERROR: CHECK SD LOG")
+            time.sleep_ms(3000)
         raise
     finally:
         # 释放顺序：网络 -> Sensor -> VENC/link -> Display -> Media -> UART。

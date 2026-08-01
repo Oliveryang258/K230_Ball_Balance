@@ -40,15 +40,20 @@ STREAM_TEST_WIFI_PASSWORD = "热点密码"
 在当前能够自动运行的 `main.py` 所在目录操作，所有改名都保留在同一目录：
 
 1. 将原视觉程序 `main.py` 改名为 `vision_main.py`，不要删除；
-2. 将 `main_stream_test.py` 复制到该目录并改名为新的 `main.py`；
-3. 将 `communication/mjpeg_stream.py` 放进同目录下的 `communication/`；
-4. 保留原来的 `config.py`、`vision/`、`control/`、`communication/uart.py`
+2. 将 `main_stream_test.py` 原名复制到该目录；
+3. 将 `main_sd_boot.py` 复制到该目录并改名为新的 `main.py`；
+4. 将 `communication/mjpeg_stream.py` 放进同目录下的 `communication/`；
+5. 保留原来的 `config.py`、`vision/`、`control/`、`communication/uart.py`
    和 `utils/`；
-5. 上电后等待连接热点，LCD第二行会持续显示
+6. 上电后等待连接热点，LCD第二行会持续显示
    `http://K230-IP:8080/`，接收端浏览器输入这个完整地址即可。
 
-纯SD卡模式下必须同时存在 `vision_main.py`，否则新的 `main.py` 无法复用原视觉
-检测函数。若LCD一直没有画面，断电后读取SD卡并检查文件名、目录和热点配置。
+启动时LCD会先显示 `WIFI CONNECTING...`。连接或运行失败时会短暂显示
+`ERROR: CHECK SD LOG`，此时不要继续等待，应断电读取启动日志。
+
+纯SD卡模式下必须同时存在 `vision_main.py`、`main_stream_test.py` 和作为
+`main.py` 使用的启动器。若LCD超过30秒仍没有画面，断电后读取SD卡中的
+`/sdcard/k230_stream_boot.log`；日志会记录导入阶段或运行阶段的异常类型和信息。
 
 纯SD卡回退：删除或改名实验版 `main.py`，再把 `vision_main.py` 改回
 `main.py`。不要同时保留两个同名文件。
