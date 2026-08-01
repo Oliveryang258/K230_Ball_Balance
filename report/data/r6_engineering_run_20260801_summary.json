@@ -1,0 +1,53 @@
+{
+  "source": "r6_engineering_run_20260801.csv",
+  "px_per_cm_conservative": 25.0,
+  "inferred_target_px": 506.0,
+  "lap_time_s": 28.0,
+  "ball_loss_events": 0,
+  "segments": {
+    "all": {
+      "samples": 1400,
+      "duration_s": 28.0,
+      "mae_px": 19.4,
+      "mae_cm": 0.78,
+      "p95_px": 38.0,
+      "p95_cm": 1.52,
+      "max_px": 44.0,
+      "max_cm": 1.76,
+      "within_1cm_pct": 69.3
+    },
+    "straight": {
+      "samples": 683,
+      "duration_s": 13.66,
+      "mae_px": 17.7,
+      "mae_cm": 0.71,
+      "p95_px": 30.0,
+      "p95_cm": 1.2,
+      "max_px": 34.0,
+      "max_cm": 1.36,
+      "within_1cm_pct": 76.0
+    },
+    "right_turn": {
+      "samples": 662,
+      "duration_s": 13.24,
+      "mae_px": 22.1,
+      "mae_cm": 0.89,
+      "p95_px": 41.0,
+      "p95_cm": 1.64,
+      "max_px": 44.0,
+      "max_cm": 1.76,
+      "within_1cm_pct": 59.8
+    },
+    "start_stop": {
+      "samples": 55,
+      "duration_s": 1.1,
+      "mae_px": 9.3,
+      "mae_cm": 0.37,
+      "p95_px": 20.6,
+      "p95_cm": 0.82,
+      "max_px": 22.0,
+      "max_cm": 0.88,
+      "within_1cm_pct": 100.0
+    }
+  }
+}

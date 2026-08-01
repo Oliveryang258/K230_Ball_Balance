@@ -1,0 +1,4 @@
+position,valid_samples,invalid_samples,valid_rate_pct,raw_mean_px,filtered_mean_px,radius_min_px,radius_max_px,fps_min,fps_max,note
+center,14,5,73.7,319.86,319.50,9,18,95.8,95.8,pre-improvement calibration
+left,9,1,90.0,42.89,41.78,11,17,98.0,98.2,pre-improvement calibration
+right,17,0,100.0,617.29,617.29,16,19,98.4,98.7,pre-improvement calibration

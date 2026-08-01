@@ -1,103 +1,133 @@
-\section{测试方案与测试结果}
+\section{测试方案与结果}
 
-\subsection{测试条件与指标定义}
+\subsection{测试口径与证据范围}
 
-最终测试应在赛题规定的黑色闭合赛道上进行，并在车辆中心线上标记唯一
-测试点，用该点测量起点与停车偏差。每项至少进行多次重复试验，保留
-失败试验和原始视频/日志。滚球误差统一定义为
+滚球误差统一定义为$e_x=x_{\mathrm{ref}}-x$，并以全过程最大绝对误差
 \begin{equation}
-  e_x(t)=x_{\mathrm{ref}}(t)-x(t),
-  \qquad
-  E_{\max}=\max_{t\in\mathcal W}|e_x(t)|,
+  E_{\max}=\max_{t\in\mathcal W}|e_x(t)|
   \label{eq:max-error}
 \end{equation}
-其中$\mathcal W$为该项目规定的完整评价时间窗。R3至R6必须报告
-$E_{\max}$，均方根误差仅作为补充，不能用平均误差替代全过程约束。
-
-\pending{记录场地尺寸复核、车辆尺寸和质量、测试仪器、软件版本、参数表、
-视频文件名及日志文件名。}
+判定是否满足全程精度要求。相机最终标定为机械中心314像素，安全区间$[22,622]$像素，
+两端分别约为$-11.6\,\si{cm}$和$+11.8\,\si{cm}$；正式换算采用\SI{25}{px/cm}的
+保守比例。本文只统计保留下来的原始串口日志，不以程序设定值代替实测成绩。
 
 \begin{table}[H]
   \centering
-  \caption{赛题要求与当前证据状态}
-  \label{tab:requirements}
+  \caption{报告所用证据及其边界}
+  \label{tab:evidence}
   \small
-  \begin{tabularx}{\linewidth}{cX>{\centering\arraybackslash}p{3.1cm}
-    >{\centering\arraybackslash}p{2.4cm}}
+  \begin{tabularx}{\linewidth}{p{3.2cm}Xp{3.1cm}}
     \toprule
-    项目 & 测试内容与判据 & 当前状态 & 最终证据 \\
+    证据 & 可证明内容 & 不能证明内容 \\
     \midrule
-    R1 & 图传实时清晰显示、完整录像和回放 & 未实现
-       & \textcolor{measureblue}{视频、回放} \\
-    R2 & 一圈不超过\SI{20}{s}，停车误差不超过\SI{2}{cm}
-       & 已实现，待正式测量 & \textcolor{measureblue}{圈时、偏差} \\
-    R3 & $O\!\rightarrow\!+\SI{5}{cm}\!\rightarrow\!-\SI{5}{cm}$，
-      总时间不超过\SI{5}{s}，端点最大绝对误差不超过\SI{1}{cm}
-       & 自动序列已实现，待正式测量 & \textcolor{measureblue}{时序曲线} \\
-    R4 & A至B不超过\SI{8}{s}，全过程球位最大绝对误差不超过\SI{1}{cm}
-       & 整车闭环已具备，精度待整定 & \textcolor{measureblue}{同步日志} \\
-    R5 & 中心目标整圈不超过\SI{30}{s}，全过程最大绝对误差不超过\SI{1}{cm}
-       & 整车闭环已具备，精度待整定 & \textcolor{measureblue}{同步日志} \\
-    R6 & 任意目标整圈不超过\SI{30}{s}，全过程最大绝对误差不超过\SI{1}{cm}
-       & 待实现与测试 & \textcolor{measureblue}{多目标日志} \\
+    2026-08-01整车CSV（2304行） & 目标位置、整圈用时、分段球位误差、控制状态与丢球保护 & 多次重复性、正式裁判成绩、停车几何偏差 \\
+    三位置视觉控制台记录 & 改进前中心、左端、右端的检测稳定性与帧率 & 最终滤波算法的漏检率 \\
+    源代码与Keil构建记录 & 控制流程、保护逻辑、参数和可编译性 & 装车后的动态性能 \\
+    MJPEG PC端单元测试 & 分片解析、客户端管理等软件逻辑 & 无线距离、现场清晰度、录像与回放 \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
-\subsection{无线图传测试}
+\subsection{视觉标定与误检改进}
 
-固定图传方案后，应记录发送端、接收端和存储设备型号，检查整个摆杆是否
-持续可见、显示是否中断、录像是否完整保存以及赛后是否能够回放。每次
-测试保存对应文件名和持续时间。\measured{补入R1测试记录。}
-
-\subsection{小车循迹、计时与停车测试}
-
-分别以两档速度完成不少于3次整圈测试，记录总用时、带符号停车偏差、
-绝对停车偏差、脱线次数和是否由TFT正确显示。停车偏差使用同一车体测试点
-与A点基准线测量，取最坏值判断是否满足要求。
+相机抬高、视野覆盖完整轨道后，先在旧中心标定（约320像素）下分别采集中心、左端和右端日志，
+统计结果见表\ref{tab:vision-static}。中心位置因钢球反光和背景干扰出现5次无效帧，说明仅靠单帧圆检测
+不足以保证稳定输出。随后加入运动预测选通、连续多帧获取确认和短时漏检保持，并将最终中心重新标定为314像素。
 
 \begin{table}[H]
   \centering
-  \caption{整圈循迹与停车原始记录表}
-  \label{tab:lap-test}
+  \caption{三位置视觉记录统计（算法改进前）}
+  \label{tab:vision-static}
   \small
-  \resizebox{\linewidth}{!}{%
   \begin{tabular}{cccccc}
     \toprule
-    速度档 & 次数 & 圈时/\si{s} & 停车偏差/\si{cm} & 脱线次数 & 视频/日志 \\
+    位置 & 有效/无效帧 & 有效率 & 原始均值/px & 半径范围/px & 帧率/Hz \\
     \midrule
-    低速 & 1 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
-    低速 & 2 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
-    低速 & 3 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
-    高速 & 1 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
-    高速 & 2 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
-    高速 & 3 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    中心 & 14/5 & 73.7\% & 319.86 & 9--18 & 95.8 \\
+    左端 & 9/1 & 90.0\% & 42.89 & 11--17 & 98.0--98.2 \\
+    右端 & 17/0 & 100.0\% & 617.29 & 16--19 & 98.4--98.7 \\
     \bottomrule
   \end{tabular}
-  }
 \end{table}
 
-\subsection{静止滚球运动测试}
+纯逻辑测试覆盖了新目标三帧确认、预测保持、异常跳变拒绝、丢失后重新捕获和速度估计，全部通过。
+该测试证明状态机实现符合设计，但不替代最终光照条件下的重复漏检率测量。
 
-车辆静止时由STM32状态机自动执行第三题序列：从中心出发，经斜坡限速
-轨迹依次到达$+\SI{5}{cm}$（固定端）与$-\SI{5}{cm}$（舵机端），每个
-目标点连续稳定（位置误差不超过约\SI{1}{cm}且球速足够低）满
-\SI{250}{ms}后自动切换，全程限时约\SI{5}{s}。测试前完成像素—厘米
-标定，记录目标位置、实测位置、舵机脉宽和时间戳，计算总完成时间和
-两个目标位置评价窗内的最大绝对误差。
-\measured{补入R3目标—实测位置时序曲线及重复试验表。}
+\subsection{整车闭环工程试验}
 
-\subsection{车载滚球稳定测试}
+保留日志中的目标像素可由$x_{\mathrm{target}}=x_{\mathrm{ball}}+e_x$反推为506像素，
+相对机械中心约为$+7.4\,\si{cm}$。从车辆进入运动状态到停车状态共\SI{28.00}{s}，
+筛选滚球闭环有效、运动链路有效且车辆处于起步、直行或转弯状态的样本，共得到1400个控制点。
+误差时序如图\ref{fig:r6-run}所示，统计结果见表\ref{tab:r6-result}和表\ref{tab:r6-segment}。
 
-R4记录从A到B完整区间内的球位误差和用时；R5记录中心目标下整个环形赛道；
-R6至少记录一个非中心指定目标下的整圈数据。整圈数据宜按AB、BC、CD和DA
-分段统计，以比较直道、入弯、弯道和出弯时的扰动差异。每次试验同时记录
-无效视觉帧数、通信超时、脱线和掉球事件。
-\measured{补入R4至R6同步数据、最大绝对误差、均方根误差和最坏试次。}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.96\linewidth]{r6-engineering-run.png}
+  \caption{偏置目标整车工程试验的球位误差与车辆运动状态}
+  \label{fig:r6-run}
+\end{figure}
 
-\subsection{误差来源与分析方法}
+\begin{table}[H]
+  \centering
+  \caption{整车工程试验总体结果}
+  \label{tab:r6-result}
+  \small
+  \begin{tabular}{ccccccc}
+    \toprule
+    目标 & 圈时/s & MAE/cm & P95/cm & 最大误差/cm & $|e|\le1$ cm & 丢球事件 \\
+    \midrule
+    506 px & 28.00 & 0.78 & 1.52 & 1.76 & 69.3\% & 0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
-主要误差来源包括：像素—厘米比例与相机透视误差、钢球反光导致的检测
-跳变、滤波与通信延迟、舵机死区和静摩擦、连杆间隙、摆杆安装偏差，
-以及车辆加速、制动和过弯产生的惯性扰动。最终分析应结合时序曲线定位
-误差发生阶段；若剔除试次，必须预先规定剔除条件并保留原始记录。
+\begin{table}[H]
+  \centering
+  \caption{整车工程试验分运动阶段统计}
+  \label{tab:r6-segment}
+  \small
+  \begin{tabular}{lccccc}
+    \toprule
+    阶段 & 样本数 & 等效时长/s & MAE/cm & 最大误差/cm & $|e|\le1$ cm \\
+    \midrule
+    起步/停车过渡 & 55 & 1.10 & 0.37 & 0.88 & 100.0\% \\
+    直行 & 683 & 13.66 & 0.71 & 1.36 & 76.0\% \\
+    右转 & 662 & 13.24 & 0.89 & 1.76 & 59.8\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+该次试验的用时低于\SI{30}{s}，且没有发生从正常闭环到丢球保护的切换，证明视觉、两级串口和舵机控制在整圈运行中保持连续；然而最大误差\SI{1.76}{cm}超过\SI{1}{cm}，
+因此只能判定“偏置目标整车闭环跑通且时间达到R6门槛”，不能判定R6整体通过。右转阶段的平均误差和超限比例均明显高于直行，说明主要矛盾已由静态摩擦转移到弯道惯性扰动、车体姿态变化及前馈相位匹配。
+
+\subsection{各项任务完成状态}
+
+\begin{table}[H]
+  \centering
+  \caption{赛题项目与现有证据对应关系}
+  \label{tab:requirements}
+  \small
+  \begin{tabularx}{\linewidth}{cX>{\centering\arraybackslash}p{3.2cm}}
+    \toprule
+    项目 & 已完成工作 & 证据结论 \\
+    \midrule
+    R1 & K230双通道采集、MJPEG发送及PC端接收逻辑已实现 & 未留存现场完整录像与回放，不能判定通过 \\
+    R2 & 循迹、起终点确认、TFT计时和主动停车已实现 & 未留存正式圈时与停车偏差重复记录 \\
+    R3 & $314\rightarrow445\rightarrow190$像素自动序列、目标斜坡和稳定保持已实现 & 未留存完整时序曲线，不能报告正式成绩 \\
+    R4 & A至B运行及滚球闭环功能已联调 & 未留存对应区间的独立原始记录 \\
+    R5 & 中心目标整圈闭环功能已联调 & 未留存中心目标的完整重复记录 \\
+    R6 & 506像素偏置目标完成一次整圈工程试验 & 28.00 s；最大误差1.76 cm，时间达标、精度未达标 \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+STM32工程最后一次Keil构建记录为0错误、0警告；MJPEG PC端7项单元测试全部通过。
+这些结果用于说明软件可构建和数据链逻辑完整，不替代赛题要求的现场功能评价。
+
+\subsection{误差来源与改进方向}
+
+直行阶段仍有\SI{1.36}{cm}峰值，表明视觉比例误差、舵机死区、连杆间隙和滚球接触非线性仍然存在；
+右转阶段峰值进一步增至\SI{1.76}{cm}，说明加速度及偏航前馈的方向、权重和相位还需在相同工况下做开关对照。
+后续若继续优化，应固定机械结构与目标位置，分别记录“仅PID”“加速度前馈”“加速度加偏航前馈”三组重复试验，
+以全过程最大误差而非平均误差选参，并保留每次原始CSV和同步视频。积分增益用于消除持续偏差，但不能替代弯道前馈；
+过度增大积分会在入弯和出弯时积累并导致反向超调，因此应保持积分分离和抗饱和约束。
