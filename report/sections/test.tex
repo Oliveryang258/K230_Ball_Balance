@@ -1,0 +1,103 @@
+\section{测试方案与测试结果}
+
+\subsection{测试条件与指标定义}
+
+最终测试应在赛题规定的黑色闭合赛道上进行，并在车辆中心线上标记唯一
+测试点，用该点测量起点与停车偏差。每项至少进行多次重复试验，保留
+失败试验和原始视频/日志。滚球误差统一定义为
+\begin{equation}
+  e_x(t)=x_{\mathrm{ref}}(t)-x(t),
+  \qquad
+  E_{\max}=\max_{t\in\mathcal W}|e_x(t)|,
+  \label{eq:max-error}
+\end{equation}
+其中$\mathcal W$为该项目规定的完整评价时间窗。R3至R6必须报告
+$E_{\max}$，均方根误差仅作为补充，不能用平均误差替代全过程约束。
+
+\pending{记录场地尺寸复核、车辆尺寸和质量、测试仪器、软件版本、参数表、
+视频文件名及日志文件名。}
+
+\begin{table}[H]
+  \centering
+  \caption{赛题要求与当前证据状态}
+  \label{tab:requirements}
+  \small
+  \begin{tabularx}{\linewidth}{cX>{\centering\arraybackslash}p{3.1cm}
+    >{\centering\arraybackslash}p{2.4cm}}
+    \toprule
+    项目 & 测试内容与判据 & 当前状态 & 最终证据 \\
+    \midrule
+    R1 & 图传实时清晰显示、完整录像和回放 & 未实现
+       & \textcolor{measureblue}{视频、回放} \\
+    R2 & 一圈不超过\SI{20}{s}，停车误差不超过\SI{2}{cm}
+       & 已实现，待正式测量 & \textcolor{measureblue}{圈时、偏差} \\
+    R3 & $O\!\rightarrow\!+\SI{5}{cm}\!\rightarrow\!-\SI{5}{cm}$，
+      总时间不超过\SI{5}{s}，端点最大绝对误差不超过\SI{1}{cm}
+       & 自动序列已实现，待正式测量 & \textcolor{measureblue}{时序曲线} \\
+    R4 & A至B不超过\SI{8}{s}，全过程球位最大绝对误差不超过\SI{1}{cm}
+       & 整车闭环已具备，精度待整定 & \textcolor{measureblue}{同步日志} \\
+    R5 & 中心目标整圈不超过\SI{30}{s}，全过程最大绝对误差不超过\SI{1}{cm}
+       & 整车闭环已具备，精度待整定 & \textcolor{measureblue}{同步日志} \\
+    R6 & 任意目标整圈不超过\SI{30}{s}，全过程最大绝对误差不超过\SI{1}{cm}
+       & 待实现与测试 & \textcolor{measureblue}{多目标日志} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{无线图传测试}
+
+固定图传方案后，应记录发送端、接收端和存储设备型号，检查整个摆杆是否
+持续可见、显示是否中断、录像是否完整保存以及赛后是否能够回放。每次
+测试保存对应文件名和持续时间。\measured{补入R1测试记录。}
+
+\subsection{小车循迹、计时与停车测试}
+
+分别以两档速度完成不少于3次整圈测试，记录总用时、带符号停车偏差、
+绝对停车偏差、脱线次数和是否由TFT正确显示。停车偏差使用同一车体测试点
+与A点基准线测量，取最坏值判断是否满足要求。
+
+\begin{table}[H]
+  \centering
+  \caption{整圈循迹与停车原始记录表}
+  \label{tab:lap-test}
+  \small
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{cccccc}
+    \toprule
+    速度档 & 次数 & 圈时/\si{s} & 停车偏差/\si{cm} & 脱线次数 & 视频/日志 \\
+    \midrule
+    低速 & 1 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    低速 & 2 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    低速 & 3 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    高速 & 1 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    高速 & 2 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    高速 & 3 & \measured{数据} & \measured{数据} & \measured{数据} & \measured{编号} \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{静止滚球运动测试}
+
+车辆静止时由STM32状态机自动执行第三题序列：从中心出发，经斜坡限速
+轨迹依次到达$+\SI{5}{cm}$（固定端）与$-\SI{5}{cm}$（舵机端），每个
+目标点连续稳定（位置误差不超过约\SI{1}{cm}且球速足够低）满
+\SI{250}{ms}后自动切换，全程限时约\SI{5}{s}。测试前完成像素—厘米
+标定，记录目标位置、实测位置、舵机脉宽和时间戳，计算总完成时间和
+两个目标位置评价窗内的最大绝对误差。
+\measured{补入R3目标—实测位置时序曲线及重复试验表。}
+
+\subsection{车载滚球稳定测试}
+
+R4记录从A到B完整区间内的球位误差和用时；R5记录中心目标下整个环形赛道；
+R6至少记录一个非中心指定目标下的整圈数据。整圈数据宜按AB、BC、CD和DA
+分段统计，以比较直道、入弯、弯道和出弯时的扰动差异。每次试验同时记录
+无效视觉帧数、通信超时、脱线和掉球事件。
+\measured{补入R4至R6同步数据、最大绝对误差、均方根误差和最坏试次。}
+
+\subsection{误差来源与分析方法}
+
+主要误差来源包括：像素—厘米比例与相机透视误差、钢球反光导致的检测
+跳变、滤波与通信延迟、舵机死区和静摩擦、连杆间隙、摆杆安装偏差，
+以及车辆加速、制动和过弯产生的惯性扰动。最终分析应结合时序曲线定位
+误差发生阶段；若剔除试次，必须预先规定剔除条件并保留原始记录。

@@ -1,0 +1,43 @@
+\section{测试方案与测试结果}
+
+\subsection{测试条件与指标定义}
+
+\pending{列出场地、仪器、采样频率、标定、误差定义、重复次数和失败试验处理规则。}
+
+\begin{table}[H]
+  \centering
+  \caption{赛题要求测试总表}
+  \label{tab:requirements}
+  \begin{tabularx}{\linewidth}{cXccc}
+    \toprule
+    项目 & 测试内容 & 阈值 & 最坏结果 & 结论 \\
+    \midrule
+    R1 & 图传实时显示、完整录像与回放 & 功能完整 & \measured{证据} & \pending{结论} \\
+    R2 & 一圈行驶并停至A点 & $\leq\SI{20}{s}$，$\leq\SI{2}{cm}$ & \measured{数据} & \pending{结论} \\
+    R3 & $O\rightarrow+\SI{5}{cm}\rightarrow-\SI{5}{cm}$ & $\leq\SI{5}{s}$，$|e|_{\max}\leq\SI{1}{cm}$ & \measured{数据} & \pending{结论} \\
+    R4 & A至B行驶且中心点稳定 & $\leq\SI{8}{s}$，$|e|_{\max}\leq\SI{1}{cm}$ & \measured{数据} & \pending{结论} \\
+    R5 & 整圈中心点稳定 & $\leq\SI{30}{s}$，$|e|_{\max}\leq\SI{1}{cm}$ & \measured{数据} & \pending{结论} \\
+    R6 & 整圈任意指定位置稳定 & $\leq\SI{30}{s}$，$|e|_{\max}\leq\SI{1}{cm}$ & \measured{数据} & \pending{结论} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{图传测试结果}
+
+\measured{补入录像文件编号、持续时间、画面覆盖、连续性和回放结果。}
+
+\subsection{小车循迹与停车测试结果}
+
+\measured{补入R2重复试验原始数据、最坏行驶时间和停车偏差。}
+
+\subsection{静止滚球运动测试结果}
+
+\measured{补入R3时序曲线、到达时间、稳定判据和$\pm\SI{5}{cm}$最坏误差。}
+
+\subsection{车载滚球稳定测试结果}
+
+\measured{分别补入R4、R5、R6全时间窗数据；报告最大绝对误差，并分直道与弯道分析。}
+
+\subsection{误差与结果分析}
+
+\pending{区分视觉标定误差、检测噪声、通信延迟、舵机死区、结构间隙和车体扰动。}

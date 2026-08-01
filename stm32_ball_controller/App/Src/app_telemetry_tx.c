@@ -4,7 +4,7 @@ static UART_HandleTypeDef *s_uart = 0;
 static TelemetrySample s_latest_sample;
 static volatile uint8_t s_pending = 0U;
 static volatile uint8_t s_busy = 0U;
-static uint8_t s_tx_packet[TELEMETRY_PACKET_SIZE];
+static uint8_t s_tx_packet[APP_TELEMETRY_PACKET_SIZE];
 static uint16_t s_sequence = 0U;
 static volatile uint32_t s_sent_count = 0U;
 static volatile uint32_t s_overwrite_count = 0U;
@@ -75,13 +75,17 @@ void AppTelemetryTx_Poll(void)
     s_pending = 0U;
     restore_irq_state(primask);
 
+#if BALL_TELEMETRY_CONTROL_DECOMPOSITION != 0U
+    TelemetryProtocol_EncodeV3(&sample, s_sequence, s_tx_packet);
+#else
     TelemetryProtocol_Encode(&sample, s_sequence, s_tx_packet);
+#endif
     s_sequence++;
     s_busy = 1U;
     status = HAL_UART_Transmit_IT(
         s_uart,
         s_tx_packet,
-        TELEMETRY_PACKET_SIZE
+        APP_TELEMETRY_PACKET_SIZE
     );
     if (status != HAL_OK)
     {

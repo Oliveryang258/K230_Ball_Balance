@@ -61,6 +61,12 @@ void Error_Handler(void);
  */
 void AppControl_On1msTick(void);
 
+/*
+ * 请求启动第三题自动演示。真正的状态切换在下一个20 ms控制周期完成，
+ * 因而以后可以从按键EXTI回调中安全调用。
+ */
+void AppTask3_RequestStart(void);
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

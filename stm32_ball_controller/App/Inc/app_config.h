@@ -61,8 +61,8 @@
  * 重新校准必须从1510 us附近逐步向两侧扩展；出现持续嗡鸣、电流上升、
  * 发热或机构顶死时立即断电。完成带连杆标定后应重新收紧上下限。
  */
-#define SERVO_PWM_NEUTRAL_US       1440U
-#define SERVO_PWM_TEST_MIN_US      810U
+#define SERVO_PWM_NEUTRAL_US       1305U
+#define SERVO_PWM_TEST_MIN_US      800U
 #define SERVO_PWM_TEST_MAX_US      2010U
 
 /*
@@ -110,11 +110,24 @@
 #define BALL_CONTROL_TRACK_FIXED_END_X_PX       622
 
 /*
+ * 第六题（慢速指定位置）的TP位置标定。
+ * TP位置字段单位为0.1 cm；当前相机左右比例略不对称：
+ *   -116（-11.6 cm）-> x=22，0 -> x=314，+118（+11.8 cm）-> x=622。
+ * 车控允许选择-12.0～+12.0 cm，超过当前实际可见端点的部分会安全钳位到
+ * VISION_SAFE_X_MIN/MAX，不会把越界目标交给位置闭环。
+ */
+#define TASK6_COMMAND_MODE                         6U
+#define TASK6_POSITION_MIN_01CM                 (-120)
+#define TASK6_POSITION_MAX_01CM                   120
+#define TASK6_NEGATIVE_ENDPOINT_01CM            (-116)
+#define TASK6_POSITIVE_ENDPOINT_01CM              118
+
+/*
  * 2026-07-30实车重新放置钢球标定：
  * - -5 cm位于画面左侧（舵机端），实测x=190；
- * - +5 cm位于画面右侧（固定端），实测x=440。
+ * - +5 cm位于画面右侧（固定端），当前使用x=445。
  *
- * 第三题优先使用实测坐标，不再用端点比例推算值188/445。
+ * 第三题优先使用已确认坐标，不在运行中重新换算。
  * 1 cm判定使用25 px的保守整数值，避免把略大于1 cm误判为合格。
  */
 #define BALL_CONTROL_TARGET_NEGATIVE_5CM_X      190
@@ -143,16 +156,39 @@
  * RUNNING和COMPLETE期间使用本组参数，普通闭环继续使用g_kp/g_ki/g_kv。
  * 初值先与普通闭环一致，保证新增接口不会改变当前已验证行为。
  */
-#define TASK3_DEFAULT_KP_US_PER_PX              BALL_CONTROL_DEFAULT_KP_US_PER_PX
-#define TASK3_DEFAULT_KI_US_PER_PX_S            BALL_CONTROL_DEFAULT_KI_US_PER_PX_S
-#define TASK3_DEFAULT_KV_US_PER_PX_S            BALL_CONTROL_DEFAULT_KV_US_PER_PX_S
+#define TASK3_DEFAULT_KP_US_PER_PX              3.00f
+#define TASK3_DEFAULT_KI_US_PER_PX_S            1.00f
+#define TASK3_DEFAULT_KV_US_PER_PX_S            1.20f
+
+/*
+ * 第三题专用积分限幅与初始位置平衡脉宽。
+ *
+ * RUNNING/COMPLETE期间：
+ * - 积分限幅使用 g_task3_integral_limit（Watch可调），其余时间恢复普通限幅；
+ * - 基础hold PWM使用 g_task3_initial_hold_pwm_us（初始/中心位置平衡脉宽）。
+ *   线性表虽然已经编译启用，但运行时只允许第六题使用，第三题仍固定1385 us。
+ * 初值先与普通闭环一致，保证新增接口不改变当前已验证行为。
+ */
+#define TASK3_DEFAULT_INTEGRAL_MAX_US            120U
+
+/*
+ * 题目二"0下"拨码对应的TP命令帧题号（字节[6]）。
+ *
+ * CH32V304经USART2每20 ms发送一次TP帧（帧头0x54 0x50），
+ * 题号在字节[6]，取值2~6，由拨码决定：
+ *   2=快速一圈 3=静止回中 4=A到B 5=慢速回中 6=慢速指定
+ * STM32检测到题号从其他值变为本值（3=静止回中）时，
+ * 自动请求启动第三题；题目二拨码保持期间只触发一次。
+ */
+#define TASK3_TRIGGER_COMMAND_MODE                 3U
+#define TASK3_DEFAULT_INITIAL_HOLD_PWM_US        1385U
 
 /* 到位判据：位置误差不超过约 1 cm，且小球速度足够低。 */
 #define TASK3_STABLE_ERROR_MAX_PX               BALL_CONTROL_ERROR_1CM_PX
 #define TASK3_STABLE_SPEED_MAX_PX_S             40.0f
 
 /* 连续满足到位判据 200 ms 后，才切换到下一个目标点。 */
-#define TASK3_STABLE_HOLD_MS                    200U
+#define TASK3_STABLE_HOLD_MS                    250U
 
 /*
  * 第三题专用目标轨迹限速：每个20 ms控制周期，送给位置PID的目标最多
@@ -172,25 +208,47 @@
 
 #define BALL_CONTROL_DEFAULT_TARGET_X            \
     BALL_CONTROL_TRACK_CENTER_X_PX
-#define BALL_CONTROL_DEFAULT_HOLD_PWM_US     SERVO_PWM_NEUTRAL_US
+#define BALL_CONTROL_DEFAULT_HOLD_PWM_US          1385U
 
 /*
- * 车辆直线运动固定偏置前馈（cruise FF）。
+ * 基于 target_x 的平衡PWM分段线性插值表开关。
  *
- * 与AF分工：AF补偿瞬时加速度，cruise_ff补偿车辆稳定行驶造成的固定偏置
- * （车身倾斜、重心偏移、轮胎驱动力导致的平台偏转）。这类偏置随速度方向
- * 存在但不一定与瞬时加速度相关，长期由积分项扛着（实测平均I约+60 us，
- * 其中包含噪声和弯道残差，不能全部搬进前馈）。
- *
- * 生效条件：第三题IDLE 且 运动链路有效 且 motion_state==STRAIGHT。
- * 起步、转弯、停车、初始化期间为0——转弯已由YF/turn preview/AF覆盖，
- * 不再叠加。
- *
- * 初值25 us，运行时可改Watch变量g_cruise_ff_us；g_cruise_ff_enabled
- * 置0可整体关闭。加入后应观察：直线平均I下降、直线偏置减小、转弯不退化。
+ * 0：不编译运行时查表路径，所有题目使用固定中心平衡PWM；
+ * 1：编译查表路径，但只有收到有效的第六题TP配置后才按g_target_x查表。
+ * 题号2～5仍固定使用1385 us。插值表只替代基础hold PWM，AF/YF和PID算法
+ * 均保持当前冻结版本，不因启用查表而修改。
  */
-#define BALL_CONTROL_DEFAULT_CRUISE_FF_ENABLED   1U
-#define BALL_CONTROL_DEFAULT_CRUISE_FF_US        25
+#define BALL_CONTROL_BALANCE_TABLE_ENABLED     1U
+
+/*
+ * 运动状态偏置补偿（motion bias compensation）。
+ *
+ * 一个固定 cruise_ff 只补偿直线偏置，但实测直线与右转的稳态偏置大小、
+ * 方向都可能不同（ball_run(18)：直线 error≈+14、I≈47；右转 error≈+10、
+ * I≈49 且已有YF/turn preview/AF覆盖），因此按 motion_state 分别补偿：
+ * - STRAIGHT:  g_straight_bias_us。初值 -25：直线球偏左 -> error>0 ->
+ *   direction=-1 -> 需降PWM基准，故偏置为负；按 I≈47 取约50%先验证方向。
+ * - TURN_RIGHT: g_right_turn_bias_us。初值 0，右转已有YF/preview/AF，
+ *   先不加，避免叠加。
+ *
+ * 生效条件：BALL_CONTROL_MOTION_BIAS_ENABLED 且 运动链路有效 且 第三题IDLE。
+ * 起步/停车/初始化期间为0。g_motion_bias_active_us 是本周期实际生效值，
+ * 通过V3遥测byte 95(原预留位)以int8回传，K230 logger无需改动。
+ */
+#define BALL_CONTROL_MOTION_BIAS_ENABLED              0U
+#define BALL_CONTROL_DEFAULT_STRAIGHT_BIAS_US         (-15.0f)
+#define BALL_CONTROL_DEFAULT_RIGHT_TURN_BIAS_US       (-0.0f)
+
+/*
+ * motion_bias 限步进（slew）。
+ *
+ * 起步瞬间车辆从STARTING进入STRAIGHT，偏置若直接 0 -> -35 阶跃，会在
+ * 发车瞬时给平衡基准一个突跳，叠加发车扰动可能把球推偏甚至推出界。
+ * 这里限制每个20 ms控制周期偏置最多变化该值：0 -> -35 约140 ms平滑进入，
+ * 停车时 -35 -> 0 同样平滑退出。可在Keil Watch通过g_motion_bias_step_us调整，
+ * 设为0则使用本宏。
+ */
+#define BALL_CONTROL_MOTION_BIAS_STEP_US        10.0f
 
 /*
  * 轨道方向加速度前馈。
@@ -205,8 +263,8 @@
  *   g_af_lim 软限幅，单位us
  *   g_af     本周期实际采用的前馈，单位us，只读
  */
-#define BALL_CONTROL_DEFAULT_KAF_US_PER_MG       2.2f
-#define BALL_CONTROL_DEFAULT_AF_LIMIT_US         60.0f
+#define BALL_CONTROL_DEFAULT_KAF_US_PER_MG       2.0f
+#define BALL_CONTROL_DEFAULT_AF_LIMIT_US         70.0f
 #define BALL_CONTROL_AF_HARD_LIMIT_US            80.0f
 
 /*
@@ -220,7 +278,7 @@
  * 全部置1.0即等价于旧的固定Kaf。
  */
 #define BALL_CONTROL_DEFAULT_AF_W_STRAIGHT      1.0f
-#define BALL_CONTROL_DEFAULT_AF_W_TURN          0.5f
+#define BALL_CONTROL_DEFAULT_AF_W_TURN          0.3f
 #define BALL_CONTROL_DEFAULT_AF_W_START_STOP    1.0f
 
 /*
@@ -246,7 +304,7 @@
  * 恒速弯的完整补偿。实测右转yaw约-26.7 deg/s，需要约+8 us，因此KY
  * 初值取-0.30 us/(deg/s)。把g_ky改成0即可单独关闭该前馈。
  */
-#define BALL_CONTROL_DEFAULT_KY_US_PER_DPS       (-0.45f)
+#define BALL_CONTROL_DEFAULT_KY_US_PER_DPS       (-0.35f)
 #define BALL_CONTROL_DEFAULT_YF_LIMIT_US         25.0f
 #define BALL_CONTROL_DEFAULT_VREF                200.0f
 #define BALL_CONTROL_YF_HARD_LIMIT_US            40.0f
@@ -263,12 +321,18 @@
  * CSV 实测依据（tick≈19342～19582）：
  *   turn_command 约 200 ms 前已出现方向，|tc|≥25 约 140 ms 前；
  *   稳态右弯 |tc|≈61～89；yaw 从 0 建立到 10 °/s 约 200 ms。
+ *
+ * 2026-07-31实车CSV分析：入弯前 turn_command 已出现但幅值较小（|tc|≈20~30）
+ * 时，原 FULL=55 使 scale=(|tc|-20)/35 只有 0~0.29，preview 只输出 1~3 us，
+ * 形同虚设。FULL 降至 35 后 |tc|=25 时 scale=0.33、preview≈5 us，入弯前即可
+ * 提供 5~10 us 保护。本轮先只改 FULL，yaw_handover 暂不动，避免 preview 与
+ * 稳态 YF 在弯中重叠。Keil Watch 可现场调 g_turn_preview_full。
  */
-#define TURN_PREVIEW_ENABLED                        1U
+#define TURN_PREVIEW_ENABLED                        0U
 #define TURN_PREVIEW_RIGHT_SIGN                    (-1)
-#define TURN_PREVIEW_MAX_US                        10.0f
+#define TURN_PREVIEW_MAX_US                        15.0f
 #define TURN_PREVIEW_START                         20.0f
-#define TURN_PREVIEW_FULL                          55.0f
+#define TURN_PREVIEW_FULL                          35.0f
 #define TURN_PREVIEW_SIGN                          (-1)
 #define TURN_PREVIEW_RISE_STEP_US                  8.0f
 #define TURN_PREVIEW_FALL_STEP_US                  10.0f
@@ -288,7 +352,7 @@
  *   g_turn_i_delta_neg_us    弯中允许的最大负向增量，us
  *   g_turn_exit_i_step_us    出弯后每20ms拉回步长，us
  */
-#define TURN_INTEGRAL_HANDOVER_ENABLED              1U
+#define TURN_INTEGRAL_HANDOVER_ENABLED              0U
 #define TURN_I_DELTA_POS_US                         15.0f
 #define TURN_I_DELTA_NEG_US                         15.0f
 #define TURN_EXIT_I_STEP_US                         3.0f
@@ -330,24 +394,26 @@
  * Guard复位或Ki设为0时清零。转弯期间由TURN_INTEGRAL_HANDOVER接管限幅。
  */
 #define BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX     80
-#define BALL_CONTROL_INTEGRAL_MAX_US             50.0f
+#define BALL_CONTROL_INTEGRAL_MAX_US             90.0f
 
 /*
- * 发车前积分冻结与发车边沿清积分（launch phase integral management）。
+ * 两阶段积分限幅（只用于车辆普通运行，不影响第三题独立参数）：
  *
- * 只有 CH32 运动链路有效且第三题未运行时启用，不影响既有台架/第三题行为：
- * - READY：车辆 STOPPED 且球位置误差、速度同时满足稳定判据并持续
- *   PHASE_STABLE_HOLD_MS，积分清零并通过 SetIntegralLimit(0) 冻结；
- * - RUN：车辆进入 STARTING..STOPPING 任一状态即恢复完整积分限幅；
- * - 每次 停车→运动（发车边沿）强制清零一次积分，防止停车等待期积累的
- *   I 项在起步瞬间把球推偏。
+ * - 发车前：允许较大的 ±120 us 积分，用来克服钢球静摩擦、轨道死区，
+ *   尽量在车辆启动前把球送到目标附近；
+ * - 第一次收到 STARTING、STRAIGHT或转弯状态后锁存为“本轮已发车”，A区运行
+ *   上限改为 ±90 us；停车、转弯或运动链路短暂抖动都不会重新回到120 us；
+ * - 如果发车瞬间已有积分超过运行上限，不直接硬裁剪，而是每个20 ms控制周期
+ *   最多主动释放1 us。若新误差本身正在让积分绝对值减小，则优先使用真实
+ *   dt的正常积分自然退回。
  *
- * 运动链路无效（台架/无CH32）或第三题运行期间强制保持普通积分行为。
+ * 上电后锁存状态自动复位。调试时也可以把 main.c 中的 g_i_phase_reset
+ * 写成1，在下一个20 ms周期清积分并重新进入发车前阶段。
  */
 #define BALL_CONTROL_LAUNCH_PHASE_ENABLED        1U
-#define BALL_CONTROL_PHASE_STABLE_ERROR_PX       15
-#define BALL_CONTROL_PHASE_STABLE_SPEED_PX_S     40.0f
-#define BALL_CONTROL_PHASE_STABLE_HOLD_MS        500U
+#define BALL_I_LIMIT_PRESTART_US                120.0f
+#define BALL_I_LIMIT_RUNNING_US                  90.0f
+#define BALL_I_UNWIND_STEP_US                     1.0f
 
 /*
  * STM32固定周期控制任务。
@@ -378,8 +444,42 @@
  */
 #define BALL_CONTROL_DEFAULT_APPLY_OUTPUT  1U
 #define BALL_CONTROL_DEFAULT_KP_US_PER_PX  3.5f
-#define BALL_CONTROL_DEFAULT_KI_US_PER_PX_S 0.8f
-#define BALL_CONTROL_DEFAULT_KV_US_PER_PX_S 0.9f
+#define BALL_CONTROL_DEFAULT_KI_US_PER_PX_S 1.0f
+#define BALL_CONTROL_DEFAULT_KV_US_PER_PX_S 1.15f
 #define BALL_CONTROL_DEFAULT_DIRECTION     (-1)
+
+/*
+ * 目标位置增益调度（只作用于普通车辆闭环，第三题继续使用独立参数）：
+ *
+ * A区已经由x=72（约-9.6 cm）实车数据验证，并暂定覆盖到x=470（约+6 cm）。
+ * 现有g_kp/g_ki/g_kv就是冻结后的A区参数：3.5 / 1.0 / 1.15。
+ *
+ * 右端B区从x=470之后开始介入，x=506（约+7.4 cm）以后完全使用B区参数。
+ * 470～506之间按target_x线性混合，避免硬切换造成控制量突跳。调度输入必须
+ * 是目标位置，不能使用实时ball_x，否则钢球经过边界时参数会来回切换。
+ *
+ * B区初值故意与A区相同，因此加入接口后不会改变当前行为；后续只在Keil
+ * Watch中修改g_r_kp/g_r_ki/g_r_kv/g_r_i_lim即可专门调右端。
+ */
+#define BALL_GAIN_ZONE_A_MAX_X_PX                 470
+#define BALL_GAIN_ZONE_B_FULL_X_PX                506
+#define BALL_GAIN_RIGHT_DEFAULT_KP_US_PER_PX      4.0f
+#define BALL_GAIN_RIGHT_DEFAULT_KI_US_PER_PX_S    1.2f
+#define BALL_GAIN_RIGHT_DEFAULT_KV_US_PER_PX_S    1.0f
+#define BALL_GAIN_RIGHT_DEFAULT_I_LIMIT_US        90.0f
+
+/*
+ * 右端B区独立前馈参数：
+ * - 初值与A区全局AF/YF参数完全相同，因此升级代码后不会改变现有行为；
+ * - x<=470时只使用g_kaf/g_af_lim/g_ky/g_yf_lim；
+ * - x>=506时只使用g_r_kaf/g_r_af_lim/g_r_ky/g_r_yf_lim；
+ * - 470<x<506时与PID一样按目标位置线性混合，避免前馈参数硬切换；
+ * - 这里只调度增益和软限幅，AF的直线/转弯/起停权重以及YF的车速比例
+ *   继续共用现有逻辑，避免一次引入过多现场参数。
+ */
+#define BALL_GAIN_RIGHT_DEFAULT_KAF_US_PER_MG     1.5f
+#define BALL_GAIN_RIGHT_DEFAULT_AF_LIMIT_US       70.0f
+#define BALL_GAIN_RIGHT_DEFAULT_KY_US_PER_DPS     -1.0f
+#define BALL_GAIN_RIGHT_DEFAULT_YF_LIMIT_US       40.0f
 
 #endif

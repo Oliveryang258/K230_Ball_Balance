@@ -1,0 +1,4 @@
+interface:
+  display_name: "辽宁 H 题电赛报告"
+  short_description: "按赛题评分点撰写、审计并编译车载平衡滚球系统设计报告"
+  default_prompt: "Use $liaoning-h-ball-balance-report to build or audit the 2026 辽宁赛区 H 题 LaTeX design report from verified project evidence."

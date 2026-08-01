@@ -1,0 +1,192 @@
+\section{理论分析与控制方法}
+
+\subsection{小车循迹控制理论}
+
+\subsubsection{循迹误差计算}
+
+设第$i$路传感器的黑线检测状态为$s_i\in\{0,1\}$，其横向位置权值为
+$w_i$，安装方向修正系数为$d\in\{-1,1\}$。至少一路检测到黑线时，
+车辆横向偏差定义为
+\begin{equation}
+  e_{\mathrm{line}}
+  =d\frac{\sum_{i=1}^{8}w_i s_i}{\sum_{i=1}^{8}s_i}.
+  \label{eq:line-error}
+\end{equation}
+八路权值沿车身横排近似对称布置，使\eqref{eq:line-error}同时携带黑线的
+横向方向和幅值信息，为直道、弯道和短时丢线提供统一输入。当前程序针对
+两档速度分别配置权值和控制参数。若当前周期未检测到黑线，则短时沿用
+最近一次有效偏差方向；连续丢线达到\SI{1}{s}后清空控制器并停车。
+
+\subsubsection{差速运动与级联控制}
+
+设左右轮线速度分别为$v_L$、$v_R$，轮距为$b$，则两轮差速车的质心
+线速度$v$和偏航角速度$\omega$为
+\begin{equation}
+  v=\frac{v_R+v_L}{2},\qquad
+  \omega=\frac{v_R-v_L}{b}.
+  \label{eq:diff-drive}
+\end{equation}
+循迹外环每\SI{10}{ms}更新一次。以离散时刻$k$表示，PD外环输出
+\begin{equation}
+  \Delta v(k)=K_{p\mathrm{l}}e_{\mathrm{line}}(k)
+  +K_{d\mathrm{l}}\frac{e_{\mathrm{line}}(k)-e_{\mathrm{line}}(k-1)}{T_s},
+  \label{eq:line-pd}
+\end{equation}
+并形成左右轮目标
+\begin{equation}
+  v_L^\ast=v_0+\Delta v,\qquad
+  v_R^\ast=v_0-\Delta v.
+  \label{eq:wheel-target}
+\end{equation}
+差分修正量经限幅（\SI{160}{}以内）并限制每周期变化率，防止丢线和突变
+引起转向冲击。左右轮各自以编码器周期计数作为速度反馈，采用带积分限幅
+和输出饱和处理的PI控制生成电机PWM。外环负责赛道几何误差，内环抑制电机
+与负载差异，构成级联控制结构。快速档和慢速档的外环参数分别配置为
+$K_{p\mathrm{l}}/K_{d\mathrm{l}}=0.60/0.15$与$0.79/0.35$，
+内环轮速$K_p$约\SIrange{41}{42}{}、$K_i$约\SIrange{1.1}{1.3}{}，
+其取值经过现场标定，不代表理论最优。
+
+\subsubsection{起终点识别与停车逻辑}
+
+起终点横线识别不再要求精确的特定位图，而是采用“多路相邻触发＋连续
+确认”的判据：至少四路相邻传感器同时检测到黑线即视为横线候选，对应
+参数\codeparam{START\_STOP\_MIN\_ADJACENT\_SENSORS}取4，候选信号需
+连续保持三个控制周期（\SI{30}{ms}）才确认。该判据对单个传感器抖动和
+赛道岔线均不敏感，也无需预先记录横线宽度。
+
+状态机依次经历等待启动、离开起点、终点使能和停车四个阶段。起点确认后
+运行至少\SI{16}{s}（快速档）或\SI{25}{s}（慢速档）才使能终点判定，
+抑制启动位置附近的重复检测。终点确认后进入主动刹车：在速度反馈基础上
+按当前车速叠加制动脉宽
+\begin{equation}
+  u_{\mathrm{brake}}=
+  \operatorname{sat}\!\left[U_{\mathrm{base}}+K_{\mathrm{brk}}v_s\right],
+  \label{eq:brake}
+\end{equation}
+其中$U_{\mathrm{base}}=\SI{2000}{}$、$K_{\mathrm{brk}}=6$，上限
+\SI{4000}{}，使车体在横线前快速减速停车。
+
+\subsection{摆杆系统控制理论}
+
+\subsubsection{滚球模型与适用边界}
+
+取摆杆机械中点为位置原点，沿摆杆方向的钢球位移为$x$，目标位置为
+$x_{\mathrm{ref}}$，摆杆小倾角为$\theta$。若暂将钢球视为均匀实心球，
+并假设单一等效接触、纯滚动、无滑动且忽略空气阻力，则
+\begin{equation}
+  \ddot{x}=\frac{5}{7}g\sin\theta
+  \approx\frac{5}{7}g\theta.
+  \label{eq:ball-model}
+\end{equation}
+因此名义小角度模型为
+\begin{equation}
+  \frac{X(s)}{\Theta(s)}=\frac{5g}{7s^2}.
+  \label{eq:ball-transfer}
+\end{equation}
+实际PPR槽存在双侧接触、静摩擦、结构间隙和舵机连杆非线性，
+式\eqref{eq:ball-model}主要用于说明系统具有二重积分特性和速度反馈
+的必要性；最终舵机脉宽与摆杆角度关系、像素与厘米关系均应以装车标定
+结果修正。
+
+\subsubsection{视觉位置与球速估计}
+
+K230输出滤波后的球心横坐标$p_f$。一阶指数滤波写为
+\begin{equation}
+  p_f(k)=\alpha p(k)+(1-\alpha)p_f(k-1),
+  \qquad 0<\alpha\leq1.
+  \label{eq:ema}
+\end{equation}
+通过标定得到机械中点像素$p_0$和比例系数$c_x$（单位为
+\si{cm/pixel}）后，球位可表示为
+\begin{equation}
+  x=c_x(p_f-p_0),\qquad e_x=x_{\mathrm{ref}}-x.
+  \label{eq:pixel-calibration}
+\end{equation}
+当前相机标定下物理中心为$x=314$像素，可视范围$x\in[22,622]$约对应
+$[-11.6,+11.8]\,\si{cm}$；经实车重新放置钢球标定，$-5\,\si{cm}$与
+$+5\,\si{cm}$目标分别位于$x=190$与$x=445$，判定合格采用
+$25\,\si{px}$约\SI{1}{cm}的保守比例。摄像头位置变动后需重新标定。
+
+为降低单帧差分对噪声的放大，STM32按本地接收时间戳，在约
+\SI{100}{ms}窗口内对全部有效位置样本作一维线性拟合。对样本
+$(t_i,x_i)$，球速估计为
+\begin{equation}
+  \hat v=
+  \frac{\sum_i(t_i-\bar t)(x_i-\bar x)}
+       {\sum_i(t_i-\bar t)^2}.
+  \label{eq:velocity-fit}
+\end{equation}
+
+\subsubsection{滚球反馈控制与保护}
+
+摆杆角度由舵机脉宽直接驱动，因此控制器以舵机脉宽为输出量，采用
+位置比例、位置积分和球速反馈阻尼的PID结构。以离散控制周期$k$表示，
+控制偏移量为
+\begin{equation}
+  u_{\mathrm{off}}(k)=\sigma\left[
+  K_p e_x(k)+K_i\sum_{n} e_x(n)\,\Delta t_n
+  -K_v\hat v(k)\right],
+  \label{eq:ball-control}
+\end{equation}
+最终输出为保持脉宽与偏移量之和，并整体饱和限幅
+\begin{equation}
+  u(k)=\operatorname{sat}\!\left[u_{\mathrm{hold}}
+  +u_{\mathrm{off}}(k)\right].
+  \label{eq:ball-output}
+\end{equation}
+其中$\sigma=-1$为执行方向。当前配置
+$K_p=\SI{3.5}{\micro s/px}$、$K_i=\SI{1.0}{\micro s/(px\cdot s)}$、
+$K_v=\SI{1.05}{\micro s/(px/s)}$，第三题自动序列运行期间切换到
+$K_p=3.0$、$K_i=1.0$、$K_v=1.2$。为兼顾抗扰与抗噪，控制器还包含以下
+非线性处理：
+
+\begin{itemize}
+  \item 中心\SI{4}{px}死区：误差进入死区后$P$项清零，防止静态抖动
+        驱动舵机来回动作；
+  \item 积分分离：仅当$0<|e_x|\le\SI{80}{px}$且收到新视觉帧时按真实
+        $\Delta t$积分，积分独立限幅$\pm\SI{90}{\micro s}$；
+  \item 抗积分饱和：输出已饱和且本次积分增量继续把输出推向同一侧
+        限幅时，撤销该次积分增量；
+  \item 输出软限幅：保持脉宽$\pm\SI{600}{\micro s}$，且每
+        \SI{20}{ms}输出变化不超过\SI{50}{\micro s}，限制摆杆突变；
+  \item 测量保护：UART超时（\SI{150}{ms}）、视觉丢球超过宽限
+        （\SI{100}{ms}）、位置越界、相邻帧位置跳变超过\SI{40}{px}
+        或采样间隔异常时，拒绝无效测量、冻结积分并使输出逐步回到中位。
+\end{itemize}
+
+\subsection{车体运动扰动与协同控制}
+
+车辆起步、制动和过弯会在车体坐标系中引入附加惯性扰动。以沿摆杆方向
+的车体加速度$a_c$表示，名义模型可扩展为
+\begin{equation}
+  \ddot{x}\approx\frac{5}{7}\left(g\theta-a_c\right),
+  \label{eq:disturbance}
+\end{equation}
+其符号由坐标定义确定。CH32V307以\SI{50}{Hz}通过串口向STM32发送运动
+状态帧（\SI{28}{}字节，含运动状态、纵向加速度、偏航角速度和轮速，
+带CRC校验），STM32侧据此实现两级运动前馈：
+
+\begin{itemize}
+  \item 加速度前馈：根据车辆纵向加速度直接补偿起步和制动扰动，
+        $u_{\mathrm{af}}=K_{\mathrm{AF}}\cdot a_{c}$，
+        $K_{\mathrm{AF}}=\SI{2.4}{\micro s/mg}$，并经\SI{30}{\%}权重
+        的二阶低通和独立变化率限幅。由于直线与弯道的加速度耦合分量
+        不同，前馈按运动阶段分别加权（直线\SI{100}{\%}、右转
+        \SI{50}{\%}）；
+  \item 偏航角速度前馈：右转时车辆偏航给球引入离心惯性，按偏航角速度
+        和车速比例补偿
+        $u_{\mathrm{yf}}=K_{\mathrm{Y}}\omega\cdot
+        \mathrm{clamp}(v_s/v_{\mathrm{ref}},0,1)$，
+        $K_{\mathrm{Y}}=\SI{-0.45}{\micro s/(\deg/s)}$，
+        $v_{\mathrm{ref}}=\SI{200}{}$。仅当运动链路与IMU数据有效且处于
+        右转状态时生效，避免直线段误补偿。
+\end{itemize}
+
+两项前馈直接叠加到保持脉宽之上，再由PID项修正残余误差，构成
+“前馈加反馈”结构。在此基础上，运动状态偏置补偿、右转预瞄、
+转弯积分交接、发车阶段积分冻结以及目标位置平衡脉宽插值表等模块
+均已实现但默认关闭，待装车标定后按需启用，报告中不作为已完成能力
+陈述。
+
+\proposed{上述前馈增益目前按单圈实测粗调，尚未做系统性的参数整定；
+最终增益应在正式赛道按R4至R6判定重新标定。}

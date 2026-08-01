@@ -57,6 +57,8 @@ void BallController_Reset(BallController *controller)
         controller->equilibrium_pulse_us;
     controller->integral_limit_us =
         (float)BALL_CONTROL_INTEGRAL_MAX_US;
+    controller->integral_soft_unwind_step_us = 0.0f;
+    controller->integral_soft_unwind_active = false;
 }
 
 void BallController_Init(BallController *controller)
@@ -126,6 +128,7 @@ void BallController_ResetTargetSlowState(BallController *controller)
     }
 
     controller->i_term_us = 0.0f;
+    controller->integral_soft_unwind_active = false;
 }
 
 void BallController_ClearIntegral(BallController *controller)
@@ -136,6 +139,7 @@ void BallController_ClearIntegral(BallController *controller)
     }
 
     controller->i_term_us = 0.0f;
+    controller->integral_soft_unwind_active = false;
 }
 
 void BallController_SetIntegralLimit(
@@ -153,6 +157,33 @@ void BallController_SetIntegralLimit(
         limit_us = 0.0f;
     }
     controller->integral_limit_us = limit_us;
+    controller->integral_soft_unwind_step_us = 0.0f;
+    controller->integral_soft_unwind_active = false;
+}
+
+void BallController_SetIntegralSoftLimit(
+    BallController *controller,
+    float limit_us,
+    float unwind_step_us
+)
+{
+    if (controller == 0)
+    {
+        return;
+    }
+
+    if (limit_us < 0.0f)
+    {
+        limit_us = 0.0f;
+    }
+    if (unwind_step_us < 0.0f)
+    {
+        unwind_step_us = -unwind_step_us;
+    }
+
+    controller->integral_limit_us = limit_us;
+    controller->integral_soft_unwind_step_us = unwind_step_us;
+    controller->integral_soft_unwind_active = false;
 }
 
 void BallController_ClearVelocityHistory(BallController *controller)
@@ -435,35 +466,114 @@ bool BallController_StepPid(
      * 只有Ki被明确设为0，或上层guard调用BallController_Reset()时才清零。
      */
     previous_i_term_us = controller->i_term_us;
+    controller->integral_soft_unwind_active = false;
 
     if (ki_us_per_px_s <= 0.0f)
     {
         controller->i_term_us = 0.0f;
     }
-    else if ((effective_error_px != 0) &&
-             (effective_error_px >=
-              -BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX) &&
-             (effective_error_px <=
-              BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX) &&
-             controller->updated &&
-             (controller->last_dt_ms >= BALL_CONTROL_MIN_SAMPLE_MS) &&
-             (controller->last_dt_ms <= BALL_CONTROL_MAX_SAMPLE_MS))
+    else
     {
-        integral_delta_us =
-            ki_us_per_px_s *
-            (float)effective_error_px *
-            ((float)controller->last_dt_ms / 1000.0f);
-        controller->i_term_us += integral_delta_us;
+        if ((effective_error_px != 0) &&
+            (effective_error_px >=
+             -BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX) &&
+            (effective_error_px <=
+             BALL_CONTROL_LEGACY_INTEGRAL_ZONE_PX) &&
+            controller->updated &&
+            (controller->last_dt_ms >= BALL_CONTROL_MIN_SAMPLE_MS) &&
+            (controller->last_dt_ms <= BALL_CONTROL_MAX_SAMPLE_MS))
+        {
+            integral_delta_us =
+                ki_us_per_px_s *
+                (float)effective_error_px *
+                ((float)controller->last_dt_ms / 1000.0f);
+            may_integrate = true;
+        }
 
-        if (controller->i_term_us > controller->integral_limit_us)
+        /*
+         * 发车后若I仍在新的运行上限之外，禁止继续向外积累：
+         * - 自然积分增量能减小|I|时，按真实视觉dt正常退回；
+         * - 否则按固定50 Hz周期主动释放指定步长；
+         * - 当前I未回到范围前绝不瞬间clamp到新上限。
+         */
+        if ((controller->integral_soft_unwind_step_us > 0.0f) &&
+            (controller->i_term_us > controller->integral_limit_us))
         {
-            controller->i_term_us = controller->integral_limit_us;
+            if (may_integrate && (integral_delta_us < 0.0f))
+            {
+                controller->i_term_us += integral_delta_us;
+                if (controller->i_term_us <
+                    -controller->integral_limit_us)
+                {
+                    controller->i_term_us =
+                        -controller->integral_limit_us;
+                }
+            }
+            else
+            {
+                controller->i_term_us -=
+                    controller->integral_soft_unwind_step_us;
+                controller->integral_soft_unwind_active = true;
+                if (controller->i_term_us < controller->integral_limit_us)
+                {
+                    controller->i_term_us = controller->integral_limit_us;
+                }
+            }
         }
-        else if (controller->i_term_us < -controller->integral_limit_us)
+        else if ((controller->integral_soft_unwind_step_us > 0.0f) &&
+                 (controller->i_term_us <
+                  -controller->integral_limit_us))
         {
-            controller->i_term_us = -controller->integral_limit_us;
+            if (may_integrate && (integral_delta_us > 0.0f))
+            {
+                controller->i_term_us += integral_delta_us;
+                if (controller->i_term_us >
+                    controller->integral_limit_us)
+                {
+                    controller->i_term_us =
+                        controller->integral_limit_us;
+                }
+            }
+            else
+            {
+                controller->i_term_us +=
+                    controller->integral_soft_unwind_step_us;
+                controller->integral_soft_unwind_active = true;
+                if (controller->i_term_us >
+                    -controller->integral_limit_us)
+                {
+                    controller->i_term_us =
+                        -controller->integral_limit_us;
+                }
+            }
         }
-        may_integrate = true;
+        else if (may_integrate)
+        {
+            controller->i_term_us += integral_delta_us;
+
+            if (controller->i_term_us > controller->integral_limit_us)
+            {
+                controller->i_term_us = controller->integral_limit_us;
+            }
+            else if (controller->i_term_us <
+                     -controller->integral_limit_us)
+            {
+                controller->i_term_us = -controller->integral_limit_us;
+            }
+        }
+        else if (controller->integral_soft_unwind_step_us <= 0.0f)
+        {
+            /* 旧接口保持直接限幅语义，供第三题和台架模式继续使用。 */
+            if (controller->i_term_us > controller->integral_limit_us)
+            {
+                controller->i_term_us = controller->integral_limit_us;
+            }
+            else if (controller->i_term_us <
+                     -controller->integral_limit_us)
+            {
+                controller->i_term_us = -controller->integral_limit_us;
+            }
+        }
     }
     controller->updated = false;
 

@@ -1,0 +1,185 @@
+\section{电路与程序设计}
+
+\subsection{控制电路}
+
+\subsubsection{主控、传感与驱动}
+
+车辆主控采用CH32V307VCT6。八路灰度模块输出比较器数字信号，主控通过
+三位地址线控制八选一通道并依次读取。左右轮各配置AB相编码器，A相用于
+外部中断计数，B相电平用于方向判断。电机功率级由四片BTN7960B半桥组成
+左右两路全桥，主控输出方向信号和\SI{10}{kHz}PWM。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{schematic-overview.png}
+  \caption{整车控制板原理图总览}
+  \label{fig:schematic-overview}
+\end{figure}
+
+图\ref{fig:schematic-overview}给出了CH32V307、STM32F103、K230、舵机、
+按键、TFT与扩展接口之间的连接关系。由于总图包含较多网络标号，电机驱动
+和电源部分另以局部电路图展示。
+
+滚球视觉模块采用Yahboom K230 12Pin AI视觉模块；STM32F103C8T6通过
+USART1（\SI{115200}{bit/s}、8N1）接收固定11字节视觉帧。帧内包含有效
+标志、安全标志、帧号、位置误差、球心横坐标和异或校验，用于区分正常
+测量、丢球与越界状态。车辆控制侧通过USART2以\SI{50}{Hz}向STM32发送
+28字节运动状态帧，包含运动状态、纵向加速度、偏航角速度、轮速及CRC
+校验，为滚球闭环提供运动前馈；该链路超过\SI{100}{ms}无有效帧时仅在
+遥测中标记链路无效，不直接扰动舵机。调试期间STM32通过USART3外接
+HC-06蓝牙模块，以JustFloat协议向PC上位机实时发布控制分解数据。
+STM32使用TIM2通道1输出约\SI{333}{Hz}硬件PWM，驱动DS215MG舵机。
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.30\linewidth}
+    \centering
+    \includegraphics[height=8.8cm]{motor-driver.png}
+    \caption{BTN7960B电机驱动}
+    \label{fig:motor-driver}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.66\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{power-circuit.png}
+    \caption{电源稳压与滤波}
+    \label{fig:power-circuit}
+  \end{subfigure}
+  \caption{关键驱动与电源电路}
+  \label{fig:key-circuits}
+\end{figure}
+
+如图\ref{fig:motor-driver}所示，四片BTN7960B分别形成左右电机的两组半桥；
+控制端串联限流电阻，功率输出连接至PR1～PR4。图\ref{fig:power-circuit}
+中两路TPS5450分别产生\SI{7}{V}和\SI{5}{V}电源，反馈分压、续流二极管、
+电感以及输出电容共同构成降压稳压网络。
+
+\subsubsection{电源设计}
+
+系统由标称\SI{11.1}{V}的3S锂电池供电。电机驱动功率级直接连接电池
+母线；两路TPS5450DDAR分别产生\SI{7}{V}舵机电源和\SI{5}{V}视觉/
+外设电源，AMS1117-3.3进一步产生\SI{3.3}{V}逻辑电源。各电源支路共地，
+并在稳压输出和负载端配置电感、SS54续流二极管、电解电容及陶瓷去耦电容。
+电源树如图\ref{fig:power-tree}所示。
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    node distance=8mm and 9mm,
+    pwr/.style={draw,rounded corners,minimum width=25mm,minimum height=8mm,
+      align=center,font=\small,fill=blockgreen},
+    load/.style={draw,minimum width=27mm,minimum height=8mm,
+      align=center,font=\small,fill=blockblue},
+    line/.style={-{Stealth[length=2mm]},thick}
+  ]
+    \node[pwr] (bat) {3S锂电池\\\SI{11.1}{V}};
+    \node[load,right=18mm of bat] (motor) {BTN7960B\\电机功率级};
+    \node[pwr,below=of motor] (buck7) {TPS5450\\\SI{7}{V}};
+    \node[load,right=of buck7] (servo) {DS215MG舵机};
+    \node[pwr,below=of buck7] (buck5) {TPS5450\\\SI{5}{V}};
+    \node[load,right=of buck5] (k230) {K230及\\\SI{5}{V}外设};
+    \node[pwr,below=of buck5] (ldo) {AMS1117-3.3\\\SI{3.3}{V}};
+    \node[load,right=of ldo] (logic) {CH32V307、STM32\\传感器逻辑};
+
+    \draw[line] (bat) -- (motor);
+    \draw[line] (bat.east) |- (buck7.west);
+    \draw[line] (bat.east) |- (buck5.west);
+    \draw[line] (buck7) -- (servo);
+    \draw[line] (buck5) -- (k230);
+    \draw[line] (buck5) -- (ldo);
+    \draw[line] (ldo) -- (logic);
+  \end{tikzpicture}
+  \caption{系统电源树}
+  \label{fig:power-tree}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\linewidth]{pcb-front.png}
+  \caption{整车控制PCB正面布局}
+  \label{fig:pcb-front}
+\end{figure}
+
+图\ref{fig:pcb-front}所示PCB将主控、STM32模块接口、四路半桥器件、
+两路降压电源以及K230、舵机、编码器和人机交互接口集中布置。功率器件
+位于板上侧，控制与接口区域位于中下部，以缩短主要连接并便于整车接线。
+\pending{结合PCB背面图和实物复核大电流回路、地线回流及接口丝印。}
+
+当前尚未持续复现复位、舵机抖动或图像干扰，
+仍需进行电机堵转、舵机快速动作和整车连续运行时的电压跌落测试。
+
+\subsection{程序流程}
+
+\subsubsection{车辆控制流程}
+
+车辆上电后初始化系统时钟、\SI{10}{ms}周期定时器、GPIO、八路光电接口、
+编码器中断、电机PWM、串口和TFT，随后清空控制器并保持电机停止。
+运行时每\SI{10}{ms}读取编码器和光电状态，更新起终点与丢线状态机，
+计算循迹外环、左右轮速度内环并输出电机PWM。状态关系如
+图\ref{fig:car-state}所示。
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    state/.style={draw,rounded corners,minimum width=28mm,minimum height=10mm,
+      align=center,font=\small,fill=blockblue},
+    line/.style={-{Stealth[length=2mm]},thick},
+    node distance=14mm
+  ]
+    \node[state] (wait) {WAIT\_START\\等待启动};
+    \node[state,right=of wait] (leave) {LEAVING\\驶离起点};
+    \node[state,right=of leave] (armed) {ARMED\\循迹计时};
+    \node[state,right=of armed] (stop) {STOPPED\\停车显示};
+    \draw[line] (wait) -- node[above,font=\tiny]{按键启动} (leave);
+    \draw[line] (leave) -- node[above,font=\tiny]{离开横线} (armed);
+    \draw[line] (armed) -- node[above,font=\tiny]{终点横线} (stop);
+  \end{tikzpicture}
+  \caption{车辆启停状态机}
+  \label{fig:car-state}
+\end{figure}
+
+\subsubsection{视觉与滚球控制流程}
+
+K230完成媒体和串口初始化后，持续采集VGA灰度图并裁剪摆杆区域，执行
+圆检测、候选筛选、运动预测选通和位置滤波，每帧发送有效测量或明确的
+无效状态。STM32串口中断解析测量帧，\SI{20}{ms}控制任务检查通信与视觉
+状态，对有效位置窗口拟合球速，按式\eqref{eq:ball-control}计算PID偏移，
+叠加运动前馈后经过幅值、变化率限制更新舵机脉宽。为便于整车联调，
+STM32将控制量分解（P/I/D项、前馈分量与最终输出）以V3遥测帧回传K230，
+由K230写入TF卡，赛后离线解析为CSV复核各项作用。流程如图\ref{fig:ball-flow}所示。
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    block/.style={draw,rounded corners,minimum height=8mm,align=center,
+      font=\small,fill=blockblue,inner xsep=5pt},
+    line/.style={-{Stealth[length=2mm]},thick},
+    node distance=6mm
+  ]
+    \node[block] (cap) {灰度采集\\ROI裁剪};
+    \node[block,right=of cap] (detect) {圆检测\\候选筛选};
+    \node[block,right=of detect] (filter) {位置滤波\\安全判断};
+    \node[block,right=of filter] (uart) {UART\\固定帧};
+    \node[block,below=10mm of uart] (guard) {协议、超时\\丢球与越界保护};
+    \node[block,left=of guard] (speed) {位置窗口\\球速拟合};
+    \node[block,left=of speed] (ctrl) {位置PID反馈\\球速阻尼};
+    \node[block,left=of ctrl] (out) {限幅与斜率限制\\舵机PWM};
+    \draw[line] (cap) -- (detect);
+    \draw[line] (detect) -- (filter);
+    \draw[line] (filter) -- (uart);
+    \draw[line] (uart) -- (guard);
+    \draw[line] (guard) -- (speed);
+    \draw[line] (speed) -- (ctrl);
+    \draw[line] (ctrl) -- (out);
+  \end{tikzpicture}
+  \caption{视觉测量与滚球控制数据流}
+  \label{fig:ball-flow}
+\end{figure}
+
+\subsection{安全与异常处理}
+
+车辆侧短时丢线时保留最近偏差方向，连续丢线约\SI{1}{s}后清空控制器
+并停车。滚球侧对帧校验、测量有效性、位置安全区和本地时间间隔逐项检查；
+K230通信超过\SI{150}{ms}、视觉丢球、位置越界或采样异常时，STM32
+禁止闭环采用该测量，并使舵机逐步返回中位。运动链路超过\SI{100}{ms}
+无有效帧时，加速度与偏航角速度前馈自动失效，滚球闭环退化为仅靠位置
+与球速反馈维持，不产生额外扰动。

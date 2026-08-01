@@ -1,0 +1,80 @@
+\section{系统方案与论证}
+
+\subsection{系统总体方案}
+
+系统由车辆循迹、钢球视觉测量、摆杆闭环、电源与人机交互、无线图传
+五部分组成。车辆侧以CH32V307为主控生成循迹差速与轮速调节量；K230
+检测钢球位置并经串口发给STM32产生舵机脉宽指令，车辆侧另以50\,Hz
+发送运动状态帧用于滚球前馈。系统信号关系如图\ref{fig:architecture}所示。
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    node distance=1.5mm and 4mm,
+    block/.style={draw,rounded corners,minimum width=19mm,minimum height=5.2mm,align=center,
+      font=\scriptsize,fill=blockblue,inner xsep=2pt,inner ysep=1pt},
+    act/.style={block,fill=blockgreen},
+    pendingblock/.style={block,dashed,fill=orange!8},
+    line/.style={-{Stealth[length=1.6mm]},thick}
+  ]
+    \node[block] (ir) {八路红外\\传感器};
+    \node[block,right=of ir] (ch32) {CH32V307\\车辆控制};
+    \node[act,right=of ch32] (motor) {BTN7960B\\左右电机};
+    \node[block,above=of ch32] (enc) {左右编码器};
+    \node[act,above=of motor] (hmi) {启动按键\\TFT计时};
+
+    \node[block,below=2.5mm of ch32] (stm) {STM32F103\\滚球控制};
+    \node[block,left=of stm] (k230) {K230\\检测与滤波};
+    \node[block,left=of k230] (cam) {控制摄像头\\钢球图像};
+    \node[act,right=of stm] (servo) {DS215MG\\PPR摆杆};
+
+    \node[pendingblock,below=1.5mm of k230] (video) {车载图传发送端};
+    \node[pendingblock,right=of video] (receiver) {场外接收\\显示回放};
+
+    \draw[line] (ir) -- node[above,font=\tiny]{数字量} (ch32);
+    \draw[line] (enc) -- node[right,font=\tiny]{脉冲} (ch32);
+    \draw[line] (ch32) -- node[above,font=\tiny]{方向、PWM} (motor);
+    \draw[<->,thick] (hmi.south) -- node[right,font=\tiny]{按键/显示} (ch32.north east);
+    \draw[line] (cam) -- (k230);
+    \draw[line] (k230) -- node[above,font=\tiny]{UART 11B} (stm);
+    \draw[line] (stm) -- node[above,font=\tiny]{PWM} (servo);
+    \draw[line] (ch32.south) -- node[right,font=\tiny]{运动帧 50\,Hz} (stm.north);
+    \draw[line,dashed] (video) -- node[above,font=\tiny]{无线链路} (receiver);
+  \end{tikzpicture}
+  \caption{系统总体结构与信号流（虚线模块为无线图传链路，尚待完成）}
+  \label{fig:architecture}
+\end{figure}
+
+\subsection{小车循迹控制方案}
+
+车辆循迹可采用开环固定PWM差速，也可采用带轮速反馈的级联闭环。前者
+结构简单，但左右电机差异、负载变化和电池电压下降会直接造成直线偏航，
+且基础速度与转向修正相互耦合。为提高两轮速度的一致性，本系统选择
+“八路光电加权偏差+循迹PD外环+左右轮PI速度内环”的方案：外环根据
+赛道偏差生成差速修正，内环利用编码器反馈分别约束两轮速度，从而可
+相对独立地调整车辆前进速度和转向响应。
+
+八路传感器布置于车体前下方，通过三位地址线依次选通八选一通道。
+相比仅使用少量离散传感器，该布局能形成具有方向和幅值信息的横向误差，
+并为直道、弯道和短时丢线提供统一输入。起终点横线采用至少四路相邻
+传感器同时触发，并在该状态下连续保持若干控制周期后确认，同时要求
+本次运行达到最短运行时间才判定到达终点，避免将普通赛道线或瞬态噪声
+误判为终点。
+
+\subsection{滚球检测与摆杆驱动方案}
+
+钢球检测比较了传统圆检测和训练式目标检测两种方案。钢球外轮廓近圆，
+且滚动范围受摆杆几何约束，因此本系统采用灰度感兴趣区域内的霍夫圆检测，
+再结合半径、区域、位置连续性和半径连续性筛选候选目标。为抑制复杂背景
+下的误检，视觉端增加基于运动预测的选通滤波：以上一帧位置预测下一帧
+出现区域，只有连续多帧在邻域内确认的目标才对外输出，短时误检直接丢弃。
+该方案无需采集和标注训练集，处理链路短，便于在K230端高频输出位置测量。
+复杂光照下的鲁棒性仍需通过漏检率测试验证，不能由现场观察帧率替代。
+
+摆杆由一个DS215MG舵机通过连杆驱动，STM32本地完成测量有效性检查、
+球速估计、闭环计算、输出限幅和异常回中。控制闭环放置在STM32侧，
+可避免视觉程序显示或调试负载直接影响舵机输出节拍。
+
+赛题要求的无线视频发送、场外接收、存储和回放是一条独立证据链。
+K230控制相机的本地显示不能自动证明图传功能已经实现。当前图传方案
+尚待确定，报告中暂不将其列为已完成功能。

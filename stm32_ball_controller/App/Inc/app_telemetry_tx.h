@@ -7,6 +7,12 @@
 #include "stm32f1xx_hal.h"
 #include "telemetry_protocol.h"
 
+#if BALL_TELEMETRY_CONTROL_DECOMPOSITION != 0U
+#define APP_TELEMETRY_PACKET_SIZE  TELEMETRY_PACKET_V3_SIZE
+#else
+#define APP_TELEMETRY_PACKET_SIZE  TELEMETRY_PACKET_SIZE
+#endif
+
 /*
  * Initialize the STM32 -> K230 telemetry path after MX_USART1_UART_Init().
  * RX and TX share USART1 but use the HAL's independent RxState/gState paths.

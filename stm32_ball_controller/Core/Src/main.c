@@ -36,17 +36,6 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-/*
- * 发车前积分相位：
- * - RUN：车辆运动中或尚未进入READY，使用完整积分；
- * - READY：车辆停止且球稳定，积分清零并冻结，等待发车。
- */
-typedef enum
-{
-    CONTROL_PHASE_RUN = 0,
-    CONTROL_PHASE_READY = 1
-} ControlPhase;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -162,6 +151,53 @@ volatile int16_t g_target_x = BALL_CONTROL_DEFAULT_TARGET_X;
 volatile uint16_t g_hold_pwm_us = BALL_CONTROL_DEFAULT_HOLD_PWM_US;
 
 /*
+ * 普通车辆闭环的位置增益调度接口：
+ * - g_kp/g_ki/g_kv：冻结的A区参数，覆盖左端到x=470（约+6 cm）；
+ * - g_r_*：右端B区参数，只需在后续右端调参时修改；
+ * - g_gain_w：0=A区，1=B区，470～506之间平滑变化；
+ * - g_eff_*：本周期真正交给控制器的参数，只读。
+ *
+ * 第三题RUNNING/COMPLETE期间仍由g_task3_*完全接管，不使用本调度结果。
+ */
+volatile float g_r_kp = BALL_GAIN_RIGHT_DEFAULT_KP_US_PER_PX;
+volatile float g_r_ki = BALL_GAIN_RIGHT_DEFAULT_KI_US_PER_PX_S;
+volatile float g_r_kv = BALL_GAIN_RIGHT_DEFAULT_KV_US_PER_PX_S;
+volatile float g_r_i_lim = BALL_GAIN_RIGHT_DEFAULT_I_LIMIT_US;
+
+/*
+ * 右端B区专用AF/YF Watch接口：
+ * - g_r_kaf / g_r_af_lim：右端轨道方向加速度前馈增益和软限幅；
+ * - g_r_ky  / g_r_yf_lim：右端右转偏航角速度前馈增益和软限幅；
+ * - g_eff_*：本周期经过A/B区平滑混合后真正参与计算的值，只读。
+ *
+ * 这些变量初值与A区全局值相同，首次烧录不会改变已有控制效果。
+ */
+volatile float g_r_kaf = BALL_GAIN_RIGHT_DEFAULT_KAF_US_PER_MG;
+volatile float g_r_af_lim = BALL_GAIN_RIGHT_DEFAULT_AF_LIMIT_US;
+volatile float g_r_ky = BALL_GAIN_RIGHT_DEFAULT_KY_US_PER_DPS;
+volatile float g_r_yf_lim = BALL_GAIN_RIGHT_DEFAULT_YF_LIMIT_US;
+volatile float g_gain_w = 0.0f;
+volatile float g_eff_kp = BALL_CONTROL_DEFAULT_KP_US_PER_PX;
+volatile float g_eff_ki = BALL_CONTROL_DEFAULT_KI_US_PER_PX_S;
+volatile float g_eff_kv = BALL_CONTROL_DEFAULT_KV_US_PER_PX_S;
+volatile float g_eff_kaf = BALL_CONTROL_DEFAULT_KAF_US_PER_MG;
+volatile float g_eff_af_lim = BALL_CONTROL_DEFAULT_AF_LIMIT_US;
+volatile float g_eff_ky = BALL_CONTROL_DEFAULT_KY_US_PER_DPS;
+volatile float g_eff_yf_lim = BALL_CONTROL_DEFAULT_YF_LIMIT_US;
+
+/*
+ * 两阶段积分Watch变量：
+ * - g_run_latched：0=发车前大积分上限，1=本轮已经发车，保持运行上限；
+ * - g_i_phase_reset：写1请求重新开始一轮，下一控制周期自动清0并清积分；
+ * - g_i_lim_active：当前目标积分限幅，只读；
+ * - g_i_unwind：本周期是否执行了1 us主动软释放，只读。
+ */
+volatile uint8_t g_run_latched = 0U;
+volatile uint8_t g_i_phase_reset = 0U;
+volatile float g_i_lim_active = BALL_I_LIMIT_PRESTART_US;
+volatile uint8_t g_i_unwind = 0U;
+
+/*
  * 第三题专用PID调参接口。
  * 自动序列RUNNING和COMPLETE期间使用本组参数；普通闭环仍使用g_kp/g_ki/g_kv。
  */
@@ -169,18 +205,47 @@ volatile float g_task3_kp = TASK3_DEFAULT_KP_US_PER_PX;
 volatile float g_task3_ki = TASK3_DEFAULT_KI_US_PER_PX_S;
 volatile float g_task3_kv = TASK3_DEFAULT_KV_US_PER_PX_S;
 /*
- * 车辆运动题专用固定前馈：
- * - 普通调参/车辆运动时可在Watch把enabled改为1；
- * - 第三题状态机不处于IDLE时自动旁路，不改变第三题任何目标点；
- * - effective_hold只读，表示本周期实际交给控制器的平衡PWM基准。
+ * 第三题专用积分限幅（us）与初始位置基础平衡脉宽（us）。
+ * RUNNING/COMPLETE期间：
+ * - 积分限幅由SetIntegralLimit设为g_task3_integral_limit；
+ * - 基础hold PWM改用g_task3_initial_hold_pwm_us（仅平衡插值表关闭时生效）。
+ * 其余时间恢复普通参数。
  */
-volatile uint8_t g_cruise_ff_enabled =
-    BALL_CONTROL_DEFAULT_CRUISE_FF_ENABLED;
-volatile int16_t g_cruise_ff_us =
-    BALL_CONTROL_DEFAULT_CRUISE_FF_US;
-volatile int16_t g_cruise_ff_active_us = 0;
+volatile float g_task3_integral_limit =
+    (float)TASK3_DEFAULT_INTEGRAL_MAX_US;
+volatile uint16_t g_task3_initial_hold_pwm_us =
+    TASK3_DEFAULT_INITIAL_HOLD_PWM_US;
+/*
+ * 运动状态偏置补偿（motion bias）Watch变量：
+ * - g_straight_bias_us / g_right_turn_bias_us 按 motion_state 生效；
+ * - g_motion_bias_active_us 只读，表示本周期实际叠加的偏置；
+ * - g_motion_bias_step_us 偏置每20ms最大变化量，平滑发车/停车边沿；
+ * - 第三题状态机不处于IDLE时自动旁路，不改变第三题任何目标点；
+ * - g_effective_hold_pwm_us 只读，表示本周期实际交给控制器的平衡PWM基准。
+ */
+volatile uint8_t g_motion_bias_enabled =
+    BALL_CONTROL_MOTION_BIAS_ENABLED;
+volatile float g_straight_bias_us =
+    BALL_CONTROL_DEFAULT_STRAIGHT_BIAS_US;
+volatile float g_right_turn_bias_us =
+    BALL_CONTROL_DEFAULT_RIGHT_TURN_BIAS_US;
+volatile float g_motion_bias_step_us =
+    BALL_CONTROL_MOTION_BIAS_STEP_US;
+volatile float g_motion_bias_active_us = 0.0f;
 volatile uint16_t g_effective_hold_pwm_us =
     BALL_CONTROL_DEFAULT_HOLD_PWM_US;
+
+/*
+ * 平衡PWM查表的Watch调试量：
+ * - target：本周期真正用于查表的目标位置，确认输入不是实时ball_x；
+ * - pwm：分段线性插值得到、尚未叠加AF/YF/PID的基础平衡PWM；
+ * - segment：0～5表示六个相邻节点区间，-1/6表示低端/高端钳位。
+ */
+volatile int16_t g_balance_lookup_target_x_px =
+    BALL_CONTROL_DEFAULT_TARGET_X;
+volatile int16_t g_balance_lookup_pwm_us =
+    BALL_CONTROL_DEFAULT_HOLD_PWM_US;
+volatile int8_t g_balance_lookup_segment = -1;
 
 /*
  * 加速度前馈使用短变量名，方便放入Keil Watch：
@@ -274,6 +339,28 @@ volatile uint8_t g_task3_state = (uint8_t)TASK3_SEQUENCE_IDLE;
 volatile uint8_t g_task3_step = 0U;
 volatile uint32_t g_task3_elapsed_ms = 0U;
 volatile int16_t g_task3_final_x = BALL_CONTROL_DEFAULT_TARGET_X;
+
+/*
+ * TP命令帧解析结果（Watch只读）：
+ *   g_cmd_mode           拨码题号（字节[6]，2~6），0xFF表示尚未收到合法TP帧
+ *   g_cmd_mode_valid     有效标志（字节[7]）
+ *   g_cmd_position_01cm  指定位置，0.1 cm（字节[8..9]，仅慢速指定题号非0）
+ * 题目二"0下"拨码（题号=TASK3_TRIGGER_COMMAND_MODE）拨下后，
+ * 按BUT2发车才由控制任务启动第三题。
+ */
+volatile uint8_t g_cmd_mode = 0xFFU;
+volatile uint8_t g_cmd_mode_valid = 0U;
+volatile int16_t g_cmd_position_01cm = 0;
+/*
+ * TP题目选择调试量：
+ * - g_task6_active：第六题已经接管target_x并启用线性表；
+ * - g_cmd_target_x：把0.1 cm位置字段换算后的相机像素目标；
+ * - g_cmd_link_valid/g_cmd_age_ms：只用于观察TP链路，新配置只在完整帧CRC通过后生效。
+ */
+volatile uint8_t g_task6_active = 0U;
+volatile int16_t g_cmd_target_x = BALL_CONTROL_TRACK_CENTER_X_PX;
+volatile uint8_t g_cmd_link_valid = 0U;
+volatile uint32_t g_cmd_age_ms = MOTION_LINK_TIMEOUT_MS + 1U;
 
 /*
  * Keil Watch只读调试结构体。
@@ -462,6 +549,173 @@ static int32_t AppRoundFloatToI32(float value)
     return (int32_t)(value - 0.5f);
 }
 
+/* 有符号整数除法四舍五入，避免负位置直接整除产生方向相关偏差。 */
+static int32_t AppRoundDivideSigned(int32_t numerator, int32_t denominator)
+{
+    if (numerator >= 0)
+    {
+        return (numerator + denominator / 2) / denominator;
+    }
+    return -((-numerator + denominator / 2) / denominator);
+}
+
+/*
+ * 把第六题TP位置（0.1 cm）换算为相机x坐标。
+ * 左右两段分别使用实测比例，保留当前视野左右不对称的标定结果。
+ */
+static int16_t Task6_Position01cmToTargetX(int16_t position_01cm)
+{
+    int32_t position = position_01cm;
+    int32_t target_x = BALL_CONTROL_TRACK_CENTER_X_PX;
+
+    if (position < TASK6_POSITION_MIN_01CM)
+    {
+        position = TASK6_POSITION_MIN_01CM;
+    }
+    else if (position > TASK6_POSITION_MAX_01CM)
+    {
+        position = TASK6_POSITION_MAX_01CM;
+    }
+
+    if (position < 0)
+    {
+        target_x += AppRoundDivideSigned(
+            position *
+            (BALL_CONTROL_TRACK_CENTER_X_PX -
+             BALL_CONTROL_TRACK_SERVO_END_X_PX),
+            -TASK6_NEGATIVE_ENDPOINT_01CM
+        );
+    }
+    else if (position > 0)
+    {
+        target_x += AppRoundDivideSigned(
+            position *
+            (BALL_CONTROL_TRACK_FIXED_END_X_PX -
+             BALL_CONTROL_TRACK_CENTER_X_PX),
+            TASK6_POSITIVE_ENDPOINT_01CM
+        );
+    }
+
+    if (target_x < VISION_SAFE_X_MIN)
+    {
+        target_x = VISION_SAFE_X_MIN;
+    }
+    else if (target_x > VISION_SAFE_X_MAX)
+    {
+        target_x = VISION_SAFE_X_MAX;
+    }
+    return (int16_t)target_x;
+}
+
+/*
+ * 根据目标位置计算右端B区权重。
+ * x<=470时完全使用冻结的A区参数；x>=506时完全使用B区参数；中间线性混合。
+ * 使用target_x而不是ball_x，避免钢球运动穿过边界时增益来回跳变。
+ */
+static float BallControl_GetRightGainWeight(int16_t target_x_px)
+{
+    if (target_x_px <= BALL_GAIN_ZONE_A_MAX_X_PX)
+    {
+        return 0.0f;
+    }
+    if (target_x_px >= BALL_GAIN_ZONE_B_FULL_X_PX)
+    {
+        return 1.0f;
+    }
+
+    return
+        (float)(target_x_px - BALL_GAIN_ZONE_A_MAX_X_PX) /
+        (float)(BALL_GAIN_ZONE_B_FULL_X_PX -
+                BALL_GAIN_ZONE_A_MAX_X_PX);
+}
+
+/*
+ * 基于 target_x 的平衡PWM分段线性插值表。
+ * 节点为2026-07-31实车标定的-9cm~+9cm平衡脉宽。
+ * 由 BALL_CONTROL_BALANCE_TABLE_ENABLED 控制；当前只允许第六题启用。
+ * 第六题基础hold PWM由 BallControl_InterpolateHoldPwm 按最终g_target_x查表得到。
+ */
+#if BALL_CONTROL_BALANCE_TABLE_ENABLED != 0U
+typedef struct
+{
+    int16_t target_x_px;
+    uint16_t hold_pwm_us;
+} BallBalancePoint;
+
+static const BallBalancePoint g_ball_balance_table[] =
+{
+    {  72, 1497 },   /* 约-9.6 cm，2026-08-01实车跑圈可用工作点 */
+    {  95, 1490 },   /* -9 cm */
+    { 168, 1470 },   /* -6 cm */
+    { 212, 1443 },   /* -4 cm, 2026-08-01 static test verified */
+    { 240, 1410 },   /* -3 cm */
+    { 314, 1385 },   /*  0 cm */
+    { 391, 1360 },   /* +3 cm */
+    { 415, 1350 },   /* +4 cm, 2026-08-01 real-device test verified */
+    { 470, 1325 },   /* +6 cm，冻结A区边界，仍需最后一次跑圈确认 */
+    { 542, 1295 },   /* +9 cm，右端B区暂定节点 */
+};
+
+/*
+ * 分段线性插值基础平衡PWM。输入必须是target_x，不是实时ball_x。
+ * - target_x<=首节点：返回首节点PWM；
+ * - target_x>=末节点：返回末节点PWM；
+ * - 相邻节点间线性插值并四舍五入；pwm差用有符号数计算，不做区间外外推。
+ */
+static uint16_t BallControl_InterpolateHoldPwm(int16_t target_x_px)
+{
+    uint32_t n = sizeof(g_ball_balance_table) / sizeof(g_ball_balance_table[0]);
+    uint32_t i;
+    uint16_t result;
+
+    g_balance_lookup_target_x_px = target_x_px;
+
+    if (target_x_px <= g_ball_balance_table[0].target_x_px)
+    {
+        result = g_ball_balance_table[0].hold_pwm_us;
+        g_balance_lookup_pwm_us = (int16_t)result;
+        g_balance_lookup_segment =
+            (target_x_px < g_ball_balance_table[0].target_x_px) ? -1 : 0;
+        return result;
+    }
+    if (target_x_px >= g_ball_balance_table[n - 1U].target_x_px)
+    {
+        result = g_ball_balance_table[n - 1U].hold_pwm_us;
+        g_balance_lookup_pwm_us = (int16_t)result;
+        g_balance_lookup_segment =
+            (target_x_px > g_ball_balance_table[n - 1U].target_x_px) ?
+            (int8_t)(n - 1U) : (int8_t)(n - 2U);
+        return result;
+    }
+
+    for (i = 0U; i + 1U < n; i++)
+    {
+        int32_t x0 = g_ball_balance_table[i].target_x_px;
+        int32_t x1 = g_ball_balance_table[i + 1U].target_x_px;
+
+        if ((target_x_px >= x0) && (target_x_px <= x1))
+        {
+            int32_t pwm0 = g_ball_balance_table[i].hold_pwm_us;
+            int32_t pwm1 = g_ball_balance_table[i + 1U].hold_pwm_us;
+            float hold =
+                (float)pwm0 +
+                (float)(pwm1 - pwm0) *
+                ((float)(target_x_px - x0) / (float)(x1 - x0));
+            result = (uint16_t)AppRoundFloatToI32(hold);
+            g_balance_lookup_pwm_us = (int16_t)result;
+            g_balance_lookup_segment = (int8_t)i;
+            return result;
+        }
+    }
+
+    /* 理论上不会到达；保留确定性的高端钳位作为防御。 */
+    result = g_ball_balance_table[n - 1U].hold_pwm_us;
+    g_balance_lookup_pwm_us = (int16_t)result;
+    g_balance_lookup_segment = (int8_t)(n - 1U);
+    return result;
+}
+#endif
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     AppUartRx_OnRxComplete(huart);
@@ -570,6 +824,9 @@ void AppControl_On1msTick(void)
     static bool  s_acc_filt_init = false;
     static float s_af_prev = 0.0f;
     static float s_yf_prev = 0.0f;
+#if BALL_CONTROL_MOTION_BIAS_ENABLED != 0U
+    static float s_motion_bias_prev = 0.0f;
+#endif
 #if TURN_INTEGRAL_HANDOVER_ENABLED != 0U
     static float    s_turn_i_entry_us = 0.0f;
     static uint8_t  s_turn_i_state = 0U;
@@ -585,11 +842,7 @@ void AppControl_On1msTick(void)
     static bool     s_lost_grace_active = false;
     static uint16_t s_last_valid_target_us = SERVO_PWM_NEUTRAL_US;
     static bool     s_lost_recovery_pending = false;
-#if BALL_CONTROL_LAUNCH_PHASE_ENABLED != 0U
-    static ControlPhase s_control_phase = CONTROL_PHASE_RUN;
-    static uint32_t     s_phase_stable_ms = 0U;
-    static uint8_t      s_phase_motion_active_prev = 0U;
-#endif
+    static uint8_t  s_last_command_mode = 0xFFU;
     AppUartRxSnapshot rx_snapshot;
     AppMotionRxSnapshot motion_snapshot;
     BallMeasurementResult measurement_result = BALL_MEAS_INVALID;
@@ -601,6 +854,11 @@ void AppControl_On1msTick(void)
     float effective_kp;
     float effective_ki;
     float effective_kv;
+    float effective_kaf;
+    float effective_af_limit;
+    float effective_ky;
+    float effective_yf_limit;
+    float effective_running_i_limit;
     float yaw_dps;
     float wheel_speed;
     float speed_scale;
@@ -657,6 +915,82 @@ void AppControl_On1msTick(void)
     {
         g_motion_packet_age_ms = MOTION_LINK_TIMEOUT_MS + 1U;
         g_motion_link_valid = 0U;
+    }
+
+    /*
+     * 拨码题号Watch只读显示。command_has_packet为false表示
+     * USART2上尚未收到任何通过CRC校验的TP帧。
+     */
+    g_cmd_mode = motion_snapshot.command_has_packet ?
+                 motion_snapshot.command.mode : 0xFFU;
+    g_cmd_mode_valid = motion_snapshot.command_has_packet ?
+                       motion_snapshot.command.valid : 0U;
+    g_cmd_position_01cm = motion_snapshot.command_has_packet ?
+                           motion_snapshot.command.position_01cm : 0;
+
+    if (motion_snapshot.command_has_packet)
+    {
+        g_cmd_age_ms =
+            (uint32_t)(now_ms - motion_snapshot.command_last_tick);
+        g_cmd_link_valid =
+            (g_cmd_age_ms <= MOTION_LINK_TIMEOUT_MS) ? 1U : 0U;
+    }
+    else
+    {
+        g_cmd_age_ms = MOTION_LINK_TIMEOUT_MS + 1U;
+        g_cmd_link_valid = 0U;
+    }
+
+    /*
+     * 只消费新收到且CRC通过的TP帧。车控每20 ms重复发送相同目标不会反复清积分，
+     * 因为后面的SetTargetX()仅在像素目标真正变化时清理旧目标慢状态。
+     */
+    if (motion_snapshot.command_new)
+    {
+        uint8_t command_mode = motion_snapshot.command.mode;
+        uint8_t command_valid = motion_snapshot.command.valid;
+
+        if ((command_valid != 0U) &&
+            (command_mode >= 2U) &&
+            (command_mode <= 6U))
+        {
+            if (command_mode != s_last_command_mode)
+            {
+#if TASK3_SEQUENCE_ENABLED != 0U
+                /* 离开题号3时结束其遗留状态，防止第三题专用参数污染其他题目。 */
+                if (command_mode != TASK3_TRIGGER_COMMAND_MODE)
+                {
+                    Task3Sequence_Init(&s_task3_sequence);
+                }
+#endif
+                /* 除第六题外，各题切换后的初始目标统一回到物理中心。 */
+                if (command_mode != TASK6_COMMAND_MODE)
+                {
+                    g_target_x = BALL_CONTROL_TRACK_CENTER_X_PX;
+                }
+                s_last_command_mode = command_mode;
+            }
+
+            if (command_mode == TASK6_COMMAND_MODE)
+            {
+                g_cmd_target_x = Task6_Position01cmToTargetX(
+                    motion_snapshot.command.position_01cm
+                );
+                g_target_x = g_cmd_target_x;
+                g_task6_active = 1U;
+            }
+            else
+            {
+                g_task6_active = 0U;
+                g_hold_pwm_us = BALL_CONTROL_DEFAULT_HOLD_PWM_US;
+            }
+        }
+        else
+        {
+            /* 明确标成无效的TP配置不能继续启用第六题查表。 */
+            g_task6_active = 0U;
+            g_hold_pwm_us = BALL_CONTROL_DEFAULT_HOLD_PWM_US;
+        }
     }
 
     protocol_error_event =
@@ -764,8 +1098,21 @@ void AppControl_On1msTick(void)
 
 #if TASK3_SEQUENCE_ENABLED != 0U
     /*
-     * 第三题启动请求既可以由Watch写入，也可以由未来的实体按键调用
-     * AppTask3_RequestStart()产生。请求只在50 Hz控制任务里消费。
+     * 题目二"0下"（题号=TASK3_TRIGGER_COMMAND_MODE=3）拨下后，
+     * 按BUT2发车（运动帧START_EVENT上升沿）才启动第三题。
+     * START_EVENT在接收中断里锁存为start_event_pending，短脉冲不丢；
+     * 启动后下次再按BUT2可重新演示。
+     */
+    if (motion_snapshot.start_event_pending &&
+        motion_snapshot.command_has_packet &&
+        (motion_snapshot.command.mode == TASK3_TRIGGER_COMMAND_MODE))
+    {
+        g_task3_start = 1U;
+    }
+
+    /*
+     * 第三题启动请求可以由Watch写入，也可以由"题号+START_EVENT"产生。
+     * 请求只在50 Hz控制任务里消费。
      */
     if (g_task3_start != 0U)
     {
@@ -840,6 +1187,22 @@ void AppControl_On1msTick(void)
     }
     else
     {
+        /*
+         * 第六题必须同时修改两件事，而且二者必须使用同一个指定位置：
+         *
+         * 1. g_target_x：交给位置闭环的目标，PID会主动把钢球移动到该点；
+         * 2. 基础平衡PWM：稍后用同一个g_target_x查询分段线性表。
+         *
+         * TP帧解析处已经在收到新命令时更新过一次g_target_x，但这里是
+         * “本周期最终目标写入点”。再次从锁存值g_cmd_target_x赋值，可以
+         * 防止前面的第三题状态机、Watch临时修改或其他调度逻辑覆盖第六题目标。
+         * 因而只要题号6保持有效，每个20 ms控制周期都会锁定到指定位置。
+         */
+        if (g_task6_active != 0U)
+        {
+            g_target_x = g_cmd_target_x;
+        }
+
         g_target_x = BallController_SetTargetX(
             &g_ball_controller,
             g_target_x
@@ -862,6 +1225,11 @@ void AppControl_On1msTick(void)
      * - SetTargetX只负责安全范围限幅和目标变化时清理旧目标慢状态。
      */
     g_task3_start = 0U;
+    /* 即使编译时关闭第三题状态机，第六题仍要接管位置闭环目标。 */
+    if (g_task6_active != 0U)
+    {
+        g_target_x = g_cmd_target_x;
+    }
     g_target_x = BallController_SetTargetX(
         &g_ball_controller,
         g_target_x
@@ -873,36 +1241,148 @@ void AppControl_On1msTick(void)
 #endif
 
     /*
-     * 固定巡航前馈只改变PWM平衡基准，不篡改314/190/440等物理目标坐标。
-     * 第三题从RUNNING直到COMPLETE/TIMEOUT都不允许叠加车辆运动补偿。
+     * 本周期所有普通闭环参数统一使用同一个右端权重：
+     * - 权重由目标位置决定，而不是由实时球位置决定；
+     * - 因此钢球在边界附近来回运动时，参数不会跟着抖动；
+     * - 第三题保持原有独立控制行为，不启用右端B区调度。
      *
-     * 仅当运动链路有效且车辆处于直线行驶（motion_state==STRAIGHT）时输出：
-     * 起步、转弯、停车、初始化期间为0，转弯已由YF/turn preview/AF覆盖。
-     * g_cruise_ff_active_us是只读Watch值，表示本周期实际叠加的前馈量。
+     * AF/YF计算位于PID参数设置之前，所以权重必须在这里先算好，不能继续
+     * 等到后面的PID代码才更新，否则目标刚变化后的第一个周期会使用旧权重。
      */
+    g_gain_w = BallControl_GetRightGainWeight((int16_t)g_target_x);
 #if TASK3_SEQUENCE_ENABLED != 0U
     if ((Task3Sequence_GetState(&s_task3_sequence) ==
-         TASK3_SEQUENCE_IDLE) &&
-        (g_cruise_ff_enabled != 0U) &&
-        (g_motion_link_valid != 0U) &&
-        (g_motion_measurement.motion_state ==
-         CH32_MOTION_STATE_STRAIGHT))
-#else
-    if ((g_cruise_ff_enabled != 0U) &&
-        (g_motion_link_valid != 0U) &&
-        (g_motion_measurement.motion_state ==
-         CH32_MOTION_STATE_STRAIGHT))
-#endif
+         TASK3_SEQUENCE_RUNNING) ||
+        (Task3Sequence_GetState(&s_task3_sequence) ==
+         TASK3_SEQUENCE_COMPLETE))
     {
+        g_gain_w = 0.0f;
+    }
+#endif
+
+    effective_kaf =
+        g_kaf + g_gain_w * (g_r_kaf - g_kaf);
+    effective_af_limit =
+        g_af_lim + g_gain_w * (g_r_af_lim - g_af_lim);
+    effective_ky =
+        g_ky + g_gain_w * (g_r_ky - g_ky);
+    effective_yf_limit =
+        g_yf_lim + g_gain_w * (g_r_yf_lim - g_yf_lim);
+
+    g_eff_kaf = effective_kaf;
+    g_eff_af_lim = effective_af_limit;
+    g_eff_ky = effective_ky;
+    g_eff_yf_lim = effective_yf_limit;
+
+    /*
+     * 运动状态偏置补偿（motion bias）。
+     *
+     * 直线与右转的稳态偏置大小/方向不同，按 motion_state 分别补偿：
+     * - STRAIGHT:  g_straight_bias_us（初值 -25，抵消球偏左的固定偏置）；
+     * - TURN_RIGHT: g_right_turn_bias_us（初值 0，右转已有YF/preview/AF）。
+     *
+     * 只改变PWM平衡基准，不篡改314/190/440等物理目标坐标；第三题从
+     * RUNNING直到COMPLETE/TIMEOUT不叠加车辆运动补偿。起步、停车、
+     * 初始化期间为0。g_motion_bias_active_us是只读Watch值，表示本周期
+     * 实际叠加的偏置量。
+     */
+#if BALL_CONTROL_MOTION_BIAS_ENABLED != 0U
+    {
+        float motion_bias_target_us = 0.0f;
+        float motion_bias_us;
+        float bias_step;
+
+        hold_pwm = (int32_t)g_hold_pwm_us;
+
+        if ((g_motion_link_valid != 0U) &&
+            (g_motion_bias_enabled != 0U))
+        {
+#if TASK3_SEQUENCE_ENABLED != 0U
+            if (Task3Sequence_GetState(&s_task3_sequence) ==
+                TASK3_SEQUENCE_IDLE)
+#endif
+            {
+                switch (g_motion_measurement.motion_state)
+                {
+                case CH32_MOTION_STATE_STRAIGHT:
+                    motion_bias_target_us = g_straight_bias_us;
+                    break;
+                case CH32_MOTION_STATE_TURN_RIGHT:
+                    motion_bias_target_us = g_right_turn_bias_us;
+                    break;
+                default:
+                    motion_bias_target_us = 0.0f;
+                    break;
+                }
+            }
+        }
+
+        /* 限步进：起步进入STRAIGHT/停车退出时平滑过渡，避免偏置阶跃把球推偏 */
+        motion_bias_us = s_motion_bias_prev;
+        bias_step = (g_motion_bias_step_us > 0.0f) ?
+            g_motion_bias_step_us : BALL_CONTROL_MOTION_BIAS_STEP_US;
+        if (motion_bias_target_us > motion_bias_us)
+        {
+            motion_bias_us += bias_step;
+            if (motion_bias_us > motion_bias_target_us)
+            {
+                motion_bias_us = motion_bias_target_us;
+            }
+        }
+        else if (motion_bias_target_us < motion_bias_us)
+        {
+            motion_bias_us -= bias_step;
+            if (motion_bias_us < motion_bias_target_us)
+            {
+                motion_bias_us = motion_bias_target_us;
+            }
+        }
+        s_motion_bias_prev = motion_bias_us;
+
+        hold_pwm += AppRoundFloatToI32(motion_bias_us);
+        g_motion_bias_active_us = motion_bias_us;
+    }
+#else
+#if BALL_CONTROL_BALANCE_TABLE_ENABLED != 0U
+    if (g_task6_active != 0U)
+    {
+        /* 只有第六题按指定位置查询基础平衡PWM。 */
         hold_pwm =
-            (int32_t)g_hold_pwm_us + (int32_t)g_cruise_ff_us;
-        g_cruise_ff_active_us = g_cruise_ff_us;
+            (int32_t)BallControl_InterpolateHoldPwm((int16_t)g_target_x);
     }
     else
     {
-        hold_pwm = (int32_t)g_hold_pwm_us;
-        g_cruise_ff_active_us = 0;
+        /* 题号2～5保持冻结后的中心基础脉宽1385 us。 */
+        hold_pwm = (int32_t)BALL_CONTROL_DEFAULT_HOLD_PWM_US;
+        g_balance_lookup_target_x_px = g_target_x;
+        g_balance_lookup_pwm_us = BALL_CONTROL_DEFAULT_HOLD_PWM_US;
+        g_balance_lookup_segment = -1;
     }
+#else
+    /*
+     * 平衡插值表关闭时：第三题RUNNING/COMPLETE用专用初始位置脉宽，
+     * 其余时间用全局g_hold_pwm_us。插值表开启时由表按target_x提供基础PWM，
+     * 优先级最高，不受本段影响。
+     */
+    {
+        uint16_t base_hold_pwm = (uint16_t)g_hold_pwm_us;
+#if TASK3_SEQUENCE_ENABLED != 0U
+        if ((Task3Sequence_GetState(&s_task3_sequence) ==
+             TASK3_SEQUENCE_RUNNING) ||
+            (Task3Sequence_GetState(&s_task3_sequence) ==
+             TASK3_SEQUENCE_COMPLETE))
+        {
+            base_hold_pwm = g_task3_initial_hold_pwm_us;
+        }
+#endif
+        hold_pwm = (int32_t)base_hold_pwm;
+        g_balance_lookup_target_x_px = g_target_x;
+        g_balance_lookup_pwm_us = (int16_t)base_hold_pwm;
+        g_balance_lookup_segment = -1;
+    }
+#endif
+    g_motion_bias_active_us = 0.0f;
+#endif
 
     /*
      * 这里只使用本周期开始时取得的一致性CH32快照。前馈在起步、直行、
@@ -958,8 +1438,8 @@ void AppControl_On1msTick(void)
                 af_weight = g_af_w_start_stop;
                 break;
             }
-            g_af_raw_us = g_kaf * s_acc_filt_mg * af_weight;
-            g_af = AppClampAf(g_af_raw_us, g_af_lim);
+            g_af_raw_us = effective_kaf * s_acc_filt_mg * af_weight;
+            g_af = AppClampAf(g_af_raw_us, effective_af_limit);
             g_af_clamped_us = g_af;
         }
     }
@@ -1031,8 +1511,8 @@ void AppControl_On1msTick(void)
         }
         g_speed_scale = speed_scale;
 
-        g_yf_raw_us = g_ky * yaw_dps * speed_scale;
-        g_yf = AppClampYf(g_yf_raw_us, g_yf_lim);
+        g_yf_raw_us = effective_ky * yaw_dps * speed_scale;
+        g_yf = AppClampYf(g_yf_raw_us, effective_yf_limit);
         g_yf_clamped_us = g_yf;
     }
 
@@ -1275,231 +1755,133 @@ void AppControl_On1msTick(void)
         g_effective_hold_pwm_us
     );
 
-    effective_kp = g_kp;
-    effective_ki = g_ki;
-    effective_kv = g_kv;
-#if TASK3_SEQUENCE_ENABLED != 0U
     /*
-     * 第三题运行和完成后的最终保持阶段使用专用参数。
-     * IDLE及TIMEOUT人工接管阶段继续使用普通闭环参数。
+     * 普通车辆闭环按target_x进行A/B区增益调度。
+     * B区初值与A区相同，所以首次烧录不会改变现有控制结果。
      */
-    if ((Task3Sequence_GetState(&s_task3_sequence) ==
-         TASK3_SEQUENCE_RUNNING) ||
-        (Task3Sequence_GetState(&s_task3_sequence) ==
-         TASK3_SEQUENCE_COMPLETE))
+    effective_kp =
+        g_kp + g_gain_w * (g_r_kp - g_kp);
+    effective_ki =
+        g_ki + g_gain_w * (g_r_ki - g_ki);
+    effective_kv =
+        g_kv + g_gain_w * (g_r_kv - g_kv);
+    if (g_r_i_lim < 0.0f)
     {
-        effective_kp = g_task3_kp;
-        effective_ki = g_task3_ki;
-        effective_kv = g_task3_kv;
+        g_r_i_lim = 0.0f;
     }
-#endif
-
-#if BALL_CONTROL_LAUNCH_PHASE_ENABLED != 0U
-    /*
-     * 发车前积分管理：
-     * - READY：车辆STOPPED且球在死区内稳定达到HOLD_MS，积分清零并冻结为0；
-     * - RUN：车辆进入STARTING..STOPPING任一状态即恢复完整积分；
-     * - 每次停车→运动的发车边沿强制清零一次积分，防止停车期积累的I项
-     *   在起步瞬间把球推偏。
-     *
-     * 只在运动链路有效且第三题空闲时生效；其余场景保持普通积分行为，
-     * 避免影响台架调试和第三题自动流程。
-     */
+    effective_running_i_limit =
+        BALL_I_LIMIT_RUNNING_US +
+        g_gain_w * (g_r_i_lim - BALL_I_LIMIT_RUNNING_US);
     {
+        uint8_t task3_active = 0U;
         uint8_t motion_active = 0U;
-        uint8_t motion_stopped = 0U;
-        uint8_t ball_stable = 0U;
-        uint8_t phase_active = 0U;
-        float phase_limit = (float)BALL_CONTROL_INTEGRAL_MAX_US;
-
-        if (g_motion_link_valid != 0U)
-        {
-            if ((g_motion_measurement.motion_state >= 1U) &&
-                (g_motion_measurement.motion_state <= 5U))
-            {
-                motion_active = 1U;
-            }
-            else if (g_motion_measurement.motion_state == 0U)
-            {
-                motion_stopped = 1U;
-            }
-        }
-
-        if (g_ball_controller.has_history &&
-            (g_ball_controller.error_px >=
-             -BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
-            (g_ball_controller.error_px <=
-             BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
-            (g_ball_controller.velocity_px_s >=
-             -BALL_CONTROL_PHASE_STABLE_SPEED_PX_S) &&
-            (g_ball_controller.velocity_px_s <=
-             BALL_CONTROL_PHASE_STABLE_SPEED_PX_S))
-        {
-            ball_stable = 1U;
-        }
 
 #if TASK3_SEQUENCE_ENABLED != 0U
-        phase_active =
-            (g_motion_link_valid != 0U) &&
+        /* 第三题继续使用用户明确要求保留的独立PID和积分上限。 */
+        if ((Task3Sequence_GetState(&s_task3_sequence) ==
+             TASK3_SEQUENCE_RUNNING) ||
             (Task3Sequence_GetState(&s_task3_sequence) ==
-             TASK3_SEQUENCE_IDLE);
-#else
-        phase_active = (g_motion_link_valid != 0U);
+             TASK3_SEQUENCE_COMPLETE))
+        {
+            task3_active = 1U;
+            g_gain_w = 0.0f;
+            effective_kp = g_task3_kp;
+            effective_ki = g_task3_ki;
+            effective_kv = g_task3_kv;
+        }
 #endif
 
-        if (phase_active != 0U)
+        if (g_i_phase_reset != 0U)
         {
-            if ((motion_active != 0U) &&
-                (s_phase_motion_active_prev == 0U))
-            {
-                BallController_ClearIntegral(&g_ball_controller);
-                s_control_phase = CONTROL_PHASE_RUN;
-            }
-            s_phase_motion_active_prev = motion_active;
+            g_i_phase_reset = 0U;
+            g_run_latched = 0U;
+            BallController_ClearIntegral(&g_ball_controller);
+        }
 
-            if ((motion_stopped != 0U) && (ball_stable != 0U))
-            {
-                s_phase_stable_ms += BALL_CONTROL_PERIOD_MS;
-            }
-            else
-            {
-                s_phase_stable_ms = 0U;
-            }
-
-            if ((motion_stopped != 0U) &&
-                (s_phase_stable_ms >= BALL_CONTROL_PHASE_STABLE_HOLD_MS))
-            {
-                BallController_ClearIntegral(&g_ball_controller);
-                s_control_phase = CONTROL_PHASE_READY;
-            }
-            else if (motion_active != 0U)
-            {
-                s_control_phase = CONTROL_PHASE_RUN;
-            }
-
-            if (s_control_phase == CONTROL_PHASE_READY)
-            {
-                phase_limit = 0.0f;
-            }
+        if (task3_active != 0U)
+        {
+            /* 第三题不使用车辆发车两阶段策略，不改变其已验证行为。 */
+            BallController_SetIntegralLimit(
+                &g_ball_controller,
+                g_task3_integral_limit
+            );
+            g_i_lim_active = g_task3_integral_limit;
         }
         else
         {
-            s_control_phase = CONTROL_PHASE_RUN;
-            s_phase_stable_ms = 0U;
-            s_phase_motion_active_prev = motion_active;
-        }
-
-        BallController_SetIntegralLimit(&g_ball_controller, phase_limit);
-    }
-#endif
-
 #if BALL_CONTROL_LAUNCH_PHASE_ENABLED != 0U
-    /*
-     * 发车前积分相位机（仅运动链路有效且第三题未运行时启用）：
-     * - 车辆 STOPPED 且球稳定持续 PHASE_STABLE_HOLD_MS -> READY，
-     *   积分清零并冻结（限幅收为0）；
-     * - 车辆进入 STARTING..STOPPING -> RUN，恢复完整积分限幅；
-     * - 停车->运动边沿强制清零一次积分，避免停车等待期积累的 I 项
-     *   在起步瞬间把球推偏。
-     * 第三题运行、运动链路无效或台架调试时保持 RUN/普通积分，不改变
-     * 既有已验证行为。
-     */
-    {
-        uint8_t motion_active = 0U;
-        uint8_t motion_stopped = 0U;
-        uint8_t ball_stable = 0U;
-        uint8_t phase_active = 0U;
-        float phase_integral_limit = (float)BALL_CONTROL_INTEGRAL_MAX_US;
-
-        if (g_motion_link_valid != 0U)
-        {
-            if ((g_motion_measurement.motion_state >= 1U) &&
-                (g_motion_measurement.motion_state <= 5U))
+            if ((g_motion_link_valid != 0U) &&
+                (g_motion_measurement.motion_state >=
+                 CH32_MOTION_STATE_STARTING) &&
+                (g_motion_measurement.motion_state <=
+                 CH32_MOTION_STATE_TURN_RIGHT))
             {
                 motion_active = 1U;
             }
-            else if (g_motion_measurement.motion_state == 0U)
+
+            /*
+             * 只在收到STARTING、STRAIGHT或转弯状态时锁存。
+             * STOPPED、STOPPING、FAULT以及仅仅“链路有效”都不能触发，
+             * 避免车控端上电时暂报STOPPING导致尚未发车就切到运行上限。
+             * 锁存后，停车或链路短暂抖动不会自动切回120 us。
+             */
+            if (motion_active != 0U)
             {
-                motion_stopped = 1U;
+                g_run_latched = 1U;
             }
-        }
 
-        if (g_ball_controller.has_history &&
-            (g_ball_controller.error_px >=
-             -BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
-            (g_ball_controller.error_px <=
-             BALL_CONTROL_PHASE_STABLE_ERROR_PX) &&
-            (g_ball_controller.velocity_px_s >=
-             -BALL_CONTROL_PHASE_STABLE_SPEED_PX_S) &&
-            (g_ball_controller.velocity_px_s <=
-             BALL_CONTROL_PHASE_STABLE_SPEED_PX_S))
-        {
-            ball_stable = 1U;
-        }
-
-#if TASK3_SEQUENCE_ENABLED != 0U
-        phase_active =
-            (g_motion_link_valid != 0U) &&
-            (Task3Sequence_GetState(&s_task3_sequence) ==
-             TASK3_SEQUENCE_IDLE);
-#else
-        phase_active = (g_motion_link_valid != 0U);
-#endif
-
-        if (phase_active != 0U)
-        {
-            if ((motion_active != 0U) &&
-                (s_phase_motion_active_prev == 0U))
+            if (g_motion_link_valid == 0U)
             {
-                /* 发车边沿：丢弃停车等待期积累的积分。 */
-                BallController_ClearIntegral(&g_ball_controller);
-                s_control_phase = CONTROL_PHASE_RUN;
+                /* 无CH32台架调试也使用当前目标位置对应的A/B区积分上限。 */
+                BallController_SetIntegralLimit(
+                    &g_ball_controller,
+                    effective_running_i_limit
+                );
+                g_i_lim_active = effective_running_i_limit;
             }
-            s_phase_motion_active_prev = motion_active;
-
-            if ((motion_stopped != 0U) && (ball_stable != 0U))
+            else if (g_run_latched == 0U)
             {
-                s_phase_stable_ms += (uint32_t)BALL_CONTROL_PERIOD_MS;
+                /* 发车前允许大积分，绝不在到达目标后自动清零。 */
+                BallController_SetIntegralLimit(
+                    &g_ball_controller,
+                    BALL_I_LIMIT_PRESTART_US
+                );
+                g_i_lim_active = BALL_I_LIMIT_PRESTART_US;
             }
             else
             {
-                s_phase_stable_ms = 0U;
+                /*
+                 * 发车后使用当前目标位置对应的A/B区积分上限。若当前I仍
+                 * 超过新上限，控制器会
+                 * 条件退积分，每20 ms最多主动释放1 us，不发生硬裁剪。
+                 */
+                BallController_SetIntegralSoftLimit(
+                    &g_ball_controller,
+                    effective_running_i_limit,
+                    BALL_I_UNWIND_STEP_US
+                );
+                g_i_lim_active = effective_running_i_limit;
             }
-
-            if ((motion_stopped != 0U) &&
-                (s_phase_stable_ms >= BALL_CONTROL_PHASE_STABLE_HOLD_MS))
-            {
-                BallController_ClearIntegral(&g_ball_controller);
-                s_control_phase = CONTROL_PHASE_READY;
-            }
-            else if (motion_active != 0U)
-            {
-                s_control_phase = CONTROL_PHASE_RUN;
-            }
-
-            if (s_control_phase == CONTROL_PHASE_READY)
-            {
-                phase_integral_limit = 0.0f;
-            }
-        }
-        else
-        {
-            s_control_phase = CONTROL_PHASE_RUN;
-            s_phase_stable_ms = 0U;
-            s_phase_motion_active_prev = motion_active;
-        }
-
-        BallController_SetIntegralLimit(
-            &g_ball_controller,
-            phase_integral_limit
-        );
-    }
+#else
+            BallController_SetIntegralLimit(
+                &g_ball_controller,
+                effective_running_i_limit
+            );
+            g_i_lim_active = effective_running_i_limit;
 #endif
+        }
+
+        /* Watch只读：记录本周期第三题覆盖后的最终有效PID参数。 */
+        g_eff_kp = effective_kp;
+        g_eff_ki = effective_ki;
+        g_eff_kv = effective_kv;
+    }
 
     /*
      * 没有新帧但尚未超时：仍以50 Hz使用最近有效状态计算P、D并维持输出。
      * I项只在AcceptMeasurement接受新帧后按真实dt更新，不会对旧帧重复积分。
      */
+    g_i_unwind = 0U;
     if (g_guard_state == CONTROL_GUARD_READY)
     {
         integral_before_control = g_ball_controller.i_term_us;
@@ -1510,6 +1892,8 @@ void AppControl_On1msTick(void)
             effective_kv,
             g_dir
         ) ? 1U : 0U;
+        g_i_unwind =
+            g_ball_controller.integral_soft_unwind_active ? 1U : 0U;
 
         if ((integral_before_control != 0.0f) &&
             (g_ball_controller.i_term_us == 0.0f) &&
@@ -1851,6 +2235,8 @@ void AppControl_On1msTick(void)
         telemetry_sample.yf_slewed_us =
             Telemetry_RoundFloatToI16(g_yf_slewed_us);
         telemetry_sample.hold_pwm_effective_us = g_effective_hold_pwm_us;
+        telemetry_sample.motion_bias_active_us =
+            (int8_t)Telemetry_RoundFloatToI16(g_motion_bias_active_us);
         telemetry_sample.feedforward_total_us =
             Telemetry_RoundFloatToI16(g_feedforward_total_us);
         telemetry_sample.servo_prelimit_us =

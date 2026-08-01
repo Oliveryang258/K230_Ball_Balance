@@ -35,8 +35,8 @@ from utils.logger import log_error, log_info
 # =============================================================================
 # 实验开关：首轮只测试“识别+图传”，确认稳定后再开启控制UART
 # =============================================================================
-STREAM_TEST_WIFI_SSID = ""
-STREAM_TEST_WIFI_PASSWORD = ""
+STREAM_TEST_WIFI_SSID = "OLIVERYANG"
+STREAM_TEST_WIFI_PASSWORD = "67676767"
 
 STREAM_TEST_ENABLED = True
 STREAM_TEST_UART_ENABLED = False

@@ -64,11 +64,12 @@ typedef struct
     uint16_t target_pulse_us;
 
     /*
-     * 积分项的独立限幅（us）。默认取 BALL_CONTROL_INTEGRAL_MAX_US，
-     * 发车相位 READY 阶段由 main.c 通过 SetIntegralLimit 临时收为 0，
-     * 使积分冻结，避免停车等待期积累的 I 项在起步瞬间把球推偏。
+     * 积分项的目标限幅（us）。soft_unwind_step_us为0时保持旧的直接限幅；
+     * 大于0时，已经超出新限幅的积分不会瞬间裁剪，而会条件退积分。
      */
     float integral_limit_us;
+    float integral_soft_unwind_step_us;
+    bool integral_soft_unwind_active;
 } BallController;
 
 typedef enum
@@ -130,6 +131,20 @@ void BallController_SetIntegralLimit(
     float limit_us
 );
 
+/*
+ * 设置带软释放的积分限幅。
+ *
+ * 当前I已经超出limit_us时：
+ * - 新测量产生的积分增量若能减小|I|，允许它按真实dt自然退回；
+ * - 否则每次50 Hz控制计算只向limit_us释放unwind_step_us；
+ * - 不会在切换限幅的瞬间硬裁剪I。
+ */
+void BallController_SetIntegralSoftLimit(
+    BallController *controller,
+    float limit_us,
+    float unwind_step_us
+);
+
 uint16_t BallController_SetEquilibriumPulseUs(
     BallController *controller,
     uint16_t equilibrium_pulse_us
@@ -178,7 +193,8 @@ bool BallController_Step(
  * - 误差位于积分区内时按完整Ki积分；
  * - 超出积分误差区时暂停积分并保留当前I；
  * - Ki设为0或guard复位时清零；
- * - 积分项具有独立限幅，PWM饱和且积分继续推向饱和时执行抗饱和回退。
+ * - 积分项具有独立限幅；启用软限幅时，超限部分按固定控制周期条件释放；
+ * - PWM饱和且积分继续推向饱和时执行抗饱和回退。
  */
 bool BallController_StepPid(
     BallController *controller,

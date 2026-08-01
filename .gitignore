@@ -39,3 +39,12 @@ Desktop.ini
 
 # Local archives
 *.zip
+
+# LaTeX build artifacts
+report/build/
+report/*.pdf
+report/*.aux
+report/*.out
+report/*.synctex.gz
+report/*.fdb_latexmk
+report/*.fls

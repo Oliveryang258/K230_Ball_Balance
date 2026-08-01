@@ -15,7 +15,8 @@ K230_Ball_Balance/
 │   │   ├── ball_detector.py      # 钢球检测器（霍夫圆 + 连续跟踪）
 │   │   └── geometry.py           # 像素误差计算、安全区判断
 │   ├── communication/
-│   │   └── uart.py               # V1 11字节二进制协议编码与发送
+│   │   ├── uart.py               # V1视觉帧发送 + STM32遥测非阻塞接收
+│   │   └── telemetry_logger.py   # STM32 V2遥测CRC校验与TF卡整块记录
 │   ├── control/
 │   │   └── filter.py             # 一阶指数滤波器
 │   └── utils/
@@ -28,15 +29,16 @@ K230_Ball_Balance/
 │   │   ├── control_guard.h       # 通信/视觉/安全三级保护接口
 │   │   ├── servo_output.h        # 舵机 PWM 输出接口（限幅 + slew）
 │   │   ├── vision_protocol.h     # K230 V1 协议解析接口
-│   │   ├── telemetry_protocol.h  # 遥测回传协议（待启用）
-│   │   └── app_telemetry_tx.h    # 遥测发送接口（待启用）
+│   │   ├── telemetry_protocol.h  # STM32→K230 64字节遥测V2
+│   │   └── app_telemetry_tx.h    # USART1非阻塞遥测发送接口
 │   ├── App/Src/                  # 应用层源文件（对应上述头文件）
 │   ├── Core/                     # CubeMX 生成的核心代码 + main.c
 │   ├── Drivers/                  # HAL 库
 │   └── MDK-ARM/                  # Keil MDK-ARM V5 工程文件
 
 ├── tools/                        # PC 端辅助工具
-│   └── mechanical_model.py       # 机械建模与标定（NumPy/pandas/matplotlib）
+│   ├── mechanical_model.py       # 机械建模与标定（NumPy/pandas/matplotlib）
+│   └── decode_k230_telemetry.py  # TF卡二进制日志转CSV（仅标准库）
 ├── data/                         # 标定数据模板
 │   └── servo_rail_calibration.csv
 └── .gitignore
@@ -62,7 +64,7 @@ DS215MG 舵机 → 连杆 → 轨道角度 → 钢球位置
 - **滤波**：一阶指数滤波，alpha 可配
 - **ROI 裁剪**：`frame.crop()` 零拷贝视图，CROP_Y=200, CROP_HEIGHT=96
 - **UART 输出**：每帧发送（包括 `ball_valid=0` 的无效帧），115200 baud
-- **物理中心**：x=361（2026-07-21 三点实测），`error_px = 361 - ball_x`
+- **物理中心**：x=314（2026-07-30 标尺实测），`error_px = 314 - ball_x`
 
 ## STM32 控制 (`stm32_ball_controller/`)
 
@@ -94,8 +96,12 @@ DS215MG 舵机 → 连杆 → 轨道角度 → 钢球位置
 ## K230↔STM32 接线
 
 ```text
-K230 IO9  (UART1_TXD)  →  STM32 PA10 (USART1_RX)
-K230 GND               →  STM32 GND
+K230 IO9  (UART1_TXD)  →  STM32 PA10 (USART1_RX)：视觉测量
+K230 IO10 (UART1_RXD)  ←  STM32 PA9  (USART1_TX)：控制/车辆遥测
+K230 GND               —  STM32 GND
 ```
 
 双方 3.3V UART。K230 单独 USB-C 供电。不要把 K230 5V 接到 STM32 信号脚。
+
+TF卡黑匣子记录、首次联调与CSV转换步骤见
+[`docs/k230_tf_telemetry_logging.md`](docs/k230_tf_telemetry_logging.md)。

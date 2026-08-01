@@ -1,0 +1,70 @@
+% 2026 辽宁赛区 H 题设计报告
+% 排版母版：
+% https://github.com/SandOcean-ovo/Template-for-Electrical-Competition-Report
+% 在其 MIT 许可的 ctexart、A4 页面、宋体小四、固定行距和右下页码方案上，
+% 针对本题评分点增加分章节源码、证据状态、siunitx、TikZ 与测试表。
+\documentclass[UTF8,zihao=-4]{ctexart}
+
+\usepackage[a4paper,left=2.5cm,right=2.5cm,top=3cm,bottom=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,multirow,array}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{setspace}
+\usepackage{etoolbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc}
+
+\IfFontExistsTF{Times New Roman}{\setmainfont{Times New Roman}}{}
+
+\graphicspath{{figures/}}
+\hypersetup{hidelinks,pdfauthor={},pdftitle={车载平衡滚球运动控制系统}}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\rfoot{\thepage}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0pt}
+\setlength{\emergencystretch}{3em}
+\setlength{\baselineskip}{22pt}
+\AtBeginEnvironment{figure}{\setstretch{1.0}}
+\AtBeginEnvironment{table}{\setstretch{1.0}}
+\sisetup{detect-all,per-mode=symbol}
+
+\definecolor{pendingred}{RGB}{180,35,35}
+\definecolor{measureblue}{RGB}{20,75,160}
+\definecolor{proposedorange}{RGB}{180,95,0}
+\definecolor{blockblue}{RGB}{232,241,250}
+\definecolor{blockgreen}{RGB}{233,246,235}
+\newcommand{\pending}[1]{\textcolor{pendingred}{【待确认：#1】}}
+\newcommand{\measured}[1]{\textcolor{measureblue}{【待实测：#1】}}
+\newcommand{\proposed}[1]{\textcolor{proposedorange}{【设计中：#1】}}
+\newcommand{\codeparam}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+  \includegraphics[width=3.5cm]{nuedc-logo.png}\\[0.4cm]
+  {\zihao{2}\bfseries H题：车载平衡滚球运动控制系统}
+\end{center}
+
+\begin{center}
+\fcolorbox{pendingred}{white}{%
+  \parbox{0.88\linewidth}{\centering\small
+  本稿为结构与技术内容第一版。蓝色“待实测”、红色“待确认”和橙色“设计中”
+  标记必须在提交前处理，不得将赛题阈值或配置参数作为实测成绩。}}
+\end{center}
+
+\input{sections/abstract}
+\input{sections/solution}
+\input{sections/theory}
+\input{sections/hardware-software}
+\input{sections/test}
+\input{sections/conclusion}
+
+\end{document}

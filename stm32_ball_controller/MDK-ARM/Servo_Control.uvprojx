@@ -81,7 +81,7 @@
           </BeforeMake>
           <AfterMake>
             <RunUserProg1>0</RunUserProg1>
-            <RunUserProg2>1</RunUserProg2>
+            <RunUserProg2>0</RunUserProg2>
             <UserProg1Name></UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
@@ -627,6 +627,11 @@
               <FilePath>..\App\Src\ball_controller.c</FilePath>
             </File>
             <File>
+              <FileName>task3_sequence.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\task3_sequence.c</FilePath>
+            </File>
+            <File>
               <FileName>telemetry_protocol.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\Src\telemetry_protocol.c</FilePath>
@@ -635,6 +640,36 @@
               <FileName>app_telemetry_tx.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\App\Src\app_telemetry_tx.c</FilePath>
+            </File>
+            <File>
+              <FileName>soft_i2c.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\soft_i2c.c</FilePath>
+            </File>
+            <File>
+              <FileName>icm20602.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\icm20602.c</FilePath>
+            </File>
+            <File>
+              <FileName>ch32_motion_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\ch32_motion_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>ch32_command_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\ch32_command_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_motion_rx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\app_motion_rx.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_justfloat_tx.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\Src\app_justfloat_tx.c</FilePath>
             </File>
           </Files>
         </Group>

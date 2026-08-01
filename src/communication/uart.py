@@ -1,7 +1,7 @@
 """K230视觉测量UART发送器。
 
 CanMV API：machine.FPIOA、FPIOA.set_function()、machine.UART、
-          UART.write()、UART.deinit()。
+          UART.write()、UART.readinto()、UART.deinit()。
 硬件：Yahboom K230 12Pin，IO9/UART1_TXD接STM32 PA10/USART1_RX，
       K230与STM32必须共地，不连接两端VCC。
 兼容性：UART1、IO9/IO10复用和固定11字节发送已在Yahboom CanMV
@@ -105,6 +105,8 @@ class VisionUart:
             bits=UART.EIGHTBITS,
             parity=UART.PARITY_NONE,
             stop=UART.STOPBITS_ONE,
+            # 非阻塞接收：主循环每帧只取走当前已经到达的数据，绝不等待STM32。
+            timeout=0,
         )
 
     @property
@@ -128,6 +130,26 @@ class VisionUart:
         written = self._uart.write(self._frame)
         self._frame_id = (self._frame_id + 1) & 0xFFFF
         return written
+
+    def readinto(self, buffer):
+        """非阻塞读取STM32回传数据到预分配缓冲区。"""
+        if not self.enabled or self._uart is None:
+            return 0
+        return self._uart.readinto(buffer)
+
+    def any(self):
+        """返回 UART 接收缓冲区中可读取的字节数。"""
+        if not self.enabled or self._uart is None:
+            return 0
+        return self._uart.any()
+
+    def read(self, nbytes=None):
+        """非阻塞读取最多 nbytes 字节；无数据时返回 None 或 b""。"""
+        if not self.enabled or self._uart is None:
+            return None
+        if nbytes is None:
+            return self._uart.read()
+        return self._uart.read(int(nbytes))
 
     def deinit(self):
         """释放 UART 资源。"""
