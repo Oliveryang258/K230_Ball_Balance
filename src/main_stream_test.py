@@ -20,7 +20,12 @@ from media.media import MediaManager
 from media.sensor import Sensor, CAM_CHN_ID_0, CAM_CHN_ID_1
 
 import config
-import main as vision_main
+# IDE手动运行时复用同目录原main.py；纯SD卡自启动时，把原main.py改名为
+# vision_main.py，再把本实验文件复制为main.py，优先导入改名后的原视觉模块。
+try:
+    import vision_main
+except ImportError:
+    import main as vision_main
 from communication.mjpeg_stream import MjpegStreamer
 from communication.uart import VisionUart
 from control.filter import ExponentialFilter
@@ -100,6 +105,7 @@ def run():
     frame_count = 0
     status_count = 0
     uart_discard_buffer = bytearray(256)
+    stream_lcd_text = "STREAM OFF"
 
     try:
         if STREAM_TEST_ENABLED:
@@ -157,6 +163,7 @@ def run():
         sensor_started = True
         if streamer is not None:
             streamer.start_server()
+            stream_lcd_text = "http://{}:{}/".format(streamer.ip, STREAM_PORT)
 
         time.sleep_ms(config.CAMERA_WARMUP_MS)
         gc.collect()
@@ -205,6 +212,14 @@ def run():
                 result,
                 clock.fps(),
                 True,
+            )
+            # 无IDE时直接从LCD读取接收地址；字符串只在启动后生成一次。
+            frame.draw_string_advanced(
+                4,
+                24,
+                14,
+                stream_lcd_text,
+                color=200,
             )
             Display.show_image(frame)
 

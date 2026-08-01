@@ -35,6 +35,24 @@ STREAM_TEST_WIFI_PASSWORD = "热点密码"
 
 不要把真实密码提交到 Git 或发到群文件。接收电脑和 K230 应连接同一网络。
 
+## 只有SD卡、不能使用IDE时
+
+在当前能够自动运行的 `main.py` 所在目录操作，所有改名都保留在同一目录：
+
+1. 将原视觉程序 `main.py` 改名为 `vision_main.py`，不要删除；
+2. 将 `main_stream_test.py` 复制到该目录并改名为新的 `main.py`；
+3. 将 `communication/mjpeg_stream.py` 放进同目录下的 `communication/`；
+4. 保留原来的 `config.py`、`vision/`、`control/`、`communication/uart.py`
+   和 `utils/`；
+5. 上电后等待连接热点，LCD第二行会持续显示
+   `http://K230-IP:8080/`，接收端浏览器输入这个完整地址即可。
+
+纯SD卡模式下必须同时存在 `vision_main.py`，否则新的 `main.py` 无法复用原视觉
+检测函数。若LCD一直没有画面，断电后读取SD卡并检查文件名、目录和热点配置。
+
+纯SD卡回退：删除或改名实验版 `main.py`，再把 `vision_main.py` 改回
+`main.py`。不要同时保留两个同名文件。
+
 ## 阶段 A：视觉-only 安全测试
 
 保持：
