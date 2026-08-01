@@ -75,6 +75,15 @@ class FakeClient:
         return len(data)
 
 
+class BusyClient:
+    def __init__(self):
+        self.calls = 0
+
+    def send(self, data):
+        self.calls += 1
+        raise OSError(11)
+
+
 class MjpegStreamLogicTests(unittest.TestCase):
     def test_selects_latest_complete_jpeg_by_pts(self):
         old = b"\xff\xd8old\xff\xd9"
@@ -105,6 +114,37 @@ class MjpegStreamLogicTests(unittest.TestCase):
         streamer._service_tx_once(1)
         self.assertEqual(1, streamer.client.calls)
         self.assertEqual(1, streamer.tx_index)
+
+    def test_tx_budget_can_advance_three_segments(self):
+        streamer = mjpeg_stream.MjpegStreamer(
+            max_jpeg_bytes=64,
+            max_send_calls_per_service=3,
+        )
+        streamer.client = FakeClient()
+        streamer.client_mode = "stream"
+        streamer._queue_tx(
+            (
+                memoryview(b"a"),
+                memoryview(b"b"),
+                memoryview(b"c"),
+                memoryview(b"d"),
+            )
+        )
+        streamer._service_tx_budget(1)
+        self.assertEqual(3, streamer.client.calls)
+        self.assertEqual(3, streamer.tx_index)
+
+    def test_tx_budget_stops_immediately_when_socket_is_busy(self):
+        streamer = mjpeg_stream.MjpegStreamer(
+            max_jpeg_bytes=64,
+            max_send_calls_per_service=3,
+        )
+        streamer.client = BusyClient()
+        streamer.client_mode = "stream"
+        streamer._queue_tx((memoryview(b"a"), memoryview(b"b")))
+        streamer._service_tx_budget(1)
+        self.assertEqual(1, streamer.client.calls)
+        self.assertEqual(0, streamer.tx_index)
 
     def test_part_header_contains_decimal_length(self):
         streamer = mjpeg_stream.MjpegStreamer(max_jpeg_bytes=64)

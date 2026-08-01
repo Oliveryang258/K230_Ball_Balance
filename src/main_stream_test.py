@@ -50,7 +50,7 @@ STREAM_TARGET_FPS = 20
 STREAM_JPEG_QUALITY = 34
 STREAM_PORT = 8080
 
-# 10 FPS、单客户端、一次视觉循环最多发送16 KB；超过180 ms未发完则断开重连。
+# 20 FPS、单客户端、一次视觉循环最多执行3次非阻塞发送（合计最多48 KB）。
 # 此期限只约束图传客户端；UART和视觉在此期间仍按每个主循环正常执行。
 STREAM_SEND_CHUNK_BYTES = 16384
 STREAM_MAX_SEND_CALLS_PER_SERVICE = 3

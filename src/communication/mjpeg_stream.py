@@ -6,7 +6,7 @@ CanMV API：network.WLAN、socket、media.vencoder、MediaManager.link、
 兼容性：基于队友已使用的旧版media.vencoder接口和K230多通道Sensor文档；
         Yahboom CanMV v1.8.0上的双通道组合仍必须实机验证。
 
-实时约束：service()每次最多调用一次非阻塞socket.send()。网络拥塞时关闭
+实时约束：service()每次只调用有上限次数的非阻塞socket.send()。网络拥塞时关闭
 客户端并等待浏览器重连，绝不在视觉主循环中等待完整JPEG发送。
 """
 
@@ -214,6 +214,7 @@ class MjpegStreamer:
         port=8080,
         max_jpeg_bytes=128 * 1024,
         send_chunk_bytes=16384,
+        max_send_calls_per_service=1,
         frame_deadline_ms=180,
         request_deadline_ms=1000,
         source_fps=60,
@@ -228,6 +229,9 @@ class MjpegStreamer:
         self.port = int(port)
         self.max_jpeg_bytes = int(max_jpeg_bytes)
         self.send_chunk_bytes = max(512, int(send_chunk_bytes))
+        self.max_send_calls_per_service = max(
+            1, int(max_send_calls_per_service)
+        )
         self.frame_deadline_ms = int(frame_deadline_ms)
         self.request_deadline_ms = int(request_deadline_ms)
         self.source_fps = int(source_fps)
@@ -445,7 +449,7 @@ class MjpegStreamer:
 
     def _service_tx_once(self, now):
         if self.tx_segments is None or self.client is None:
-            return
+            return False
         if (
             self.frame_tx_started_ms
             and time.ticks_diff(now, self.frame_tx_started_ms)
@@ -453,7 +457,7 @@ class MjpegStreamer:
         ):
             self.dropped_frames += 1
             self._close_client(True)
-            return
+            return False
 
         segment = self.tx_segments[self.tx_index]
         remaining = len(segment) - self.tx_offset
@@ -465,17 +469,17 @@ class MjpegStreamer:
         except OSError as error:
             if not _temporary_socket_error(error):
                 self._close_client(True)
-            return
+            return False
         if not sent:
-            return
+            return False
 
         self.tx_offset += sent
         if self.tx_offset < len(segment):
-            return
+            return True
         self.tx_index += 1
         self.tx_offset = 0
         if self.tx_index < len(self.tx_segments):
-            return
+            return True
 
         was_frame = self.frame_tx_started_ms != 0
         close_after = self.tx_close_after
@@ -489,6 +493,19 @@ class MjpegStreamer:
         elif previous_mode == "stream_header":
             self.client_mode = "stream"
             self.next_frame_due_ms = now
+        return True
+
+    def _service_tx_budget(self, now):
+        """在固定次数预算内推进发送；socket不可写时立即让出主循环。"""
+        calls = 0
+        while (
+            calls < self.max_send_calls_per_service
+            and self.tx_segments is not None
+            and self.client is not None
+        ):
+            if not self._service_tx_once(now):
+                break
+            calls += 1
 
     def _get_jpeg(self):
         result = self.encoder.GetStream(self.channel, self.stream_data, 0)
@@ -526,7 +543,7 @@ class MjpegStreamer:
         )
 
     def service(self):
-        """主循环每帧调用一次；单次最多执行一个非阻塞send。"""
+        """主循环每帧调用一次；按固定预算执行非阻塞send。"""
         if self.server is None or not self.encoder_started:
             return
         started = time.ticks_ms()
@@ -538,9 +555,11 @@ class MjpegStreamer:
         elif self.client_mode == "request":
             self._service_request(now)
         elif self.tx_segments is not None:
-            self._service_tx_once(now)
+            self._service_tx_budget(now)
         elif self.client_mode == "stream":
             self._schedule_frame(now)
+            if self.tx_segments is not None:
+                self._service_tx_budget(now)
 
         elapsed = time.ticks_diff(time.ticks_ms(), started)
         if elapsed > self.max_service_ms:
