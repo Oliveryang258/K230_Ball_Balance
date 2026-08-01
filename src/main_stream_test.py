@@ -55,6 +55,17 @@ STREAM_PORT = 8080
 STREAM_SEND_CHUNK_BYTES = 16384
 STREAM_FRAME_DEADLINE_MS = 180
 STREAM_STATUS_INTERVAL_FRAMES = 180
+STREAM_BOOT_LOG_PATH = "/sdcard/k230_stream_boot.log"
+
+
+def _boot_stage(name):
+    """追加一次启动里程碑；仅启动阶段调用，不进入逐帧实时路径。"""
+    try:
+        log_file = open(STREAM_BOOT_LOG_PATH, "a")
+        log_file.write("run_stage={}\n".format(name))
+        log_file.close()
+    except BaseException:
+        pass
 
 
 def _configure_experiment():
@@ -113,12 +124,16 @@ def run():
     display_initialized = False
     sensor_started = False
 
+    _boot_stage("run_enter")
+    _boot_stage("configure_begin")
     _configure_experiment()
+    _boot_stage("configure_ok")
     detector = vision_main._create_detector()
     position_filter = ExponentialFilter(config.BALL_FILTER_ALPHA)
     required_api = detector.required_api_name()
     if not detector.capability_report()[required_api]:
         raise RuntimeError("required API missing: cv_lite." + required_api)
+    _boot_stage("detector_ok")
 
     clock = time.clock()
     frame_count = 0
@@ -129,12 +144,18 @@ def run():
     try:
         if STREAM_TEST_ENABLED:
             streamer = _create_streamer()
+            _boot_stage("streamer_created")
 
+        _boot_stage("sensor_create_begin")
         sensor = Sensor(width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
+        _boot_stage("sensor_create_ok")
+        _boot_stage("sensor_reset_begin")
         sensor.reset()
+        _boot_stage("sensor_reset_ok")
         sensor.set_hmirror(config.CAMERA_HMIRROR)
         sensor.set_vflip(config.CAMERA_VFLIP)
         sensor.auto_exposure(config.CAMERA_AUTO_EXPOSURE)
+        _boot_stage("sensor_controls_ok")
 
         # CH0只供硬件JPEG编码；CH1维持现有灰度识别坐标系和软件裁剪。
         sensor.set_framesize(
@@ -144,42 +165,58 @@ def run():
             alignment=12,
         )
         sensor.set_pixformat(Sensor.YUV420SP, chn=CAM_CHN_ID_0)
+        _boot_stage("sensor_channel0_ok")
         sensor.set_framesize(
             width=config.CAMERA_WIDTH,
             height=config.CAMERA_HEIGHT,
             chn=CAM_CHN_ID_1,
         )
         sensor.set_pixformat(Sensor.GRAYSCALE, chn=CAM_CHN_ID_1)
+        _boot_stage("sensor_channel1_ok")
 
+        _boot_stage("display_init_begin")
         Display.init(
             vision_main._display_type(),
             to_ide=config.DISPLAY_TO_IDE,
         )
         display_initialized = True
+        _boot_stage("display_init_ok")
 
         if streamer is not None:
+            _boot_stage("venc_prepare_begin")
             streamer.prepare_media(sensor, CAM_CHN_ID_0)
+            _boot_stage("venc_prepare_ok")
 
+        _boot_stage("media_init_begin")
         MediaManager.init()
         media_initialized = True
+        _boot_stage("media_init_ok")
 
         if streamer is not None:
+            _boot_stage("encoder_start_begin")
             streamer.start_encoder()
+            _boot_stage("encoder_start_ok")
+        _boot_stage("sensor_run_begin")
         sensor.run()
         sensor_started = True
+        _boot_stage("sensor_run_ok")
 
         # 先点亮LCD再连接热点，避免20秒连接等待期间被误认为程序完全未启动。
         time.sleep_ms(200)
         if streamer is not None:
             _show_startup_message(sensor, "WIFI CONNECTING...")
             # UART尚未创建，因此热点连接等待不会让实验版输出半截控制数据。
+            _boot_stage("wifi_connect_begin")
             streamer.connect_wifi(
                 STREAM_TEST_WIFI_SSID,
                 STREAM_TEST_WIFI_PASSWORD,
             )
+            _boot_stage("wifi_connect_ok")
             streamer.start_server()
+            _boot_stage("server_start_ok")
             stream_lcd_text = "http://{}:{}/".format(streamer.ip, STREAM_PORT)
 
+        _boot_stage("uart_create_begin")
         vision_uart = VisionUart(
             uart_id=config.UART_ID,
             baudrate=config.UART_BAUDRATE,
@@ -187,6 +224,7 @@ def run():
             rx_pin=config.UART_RX_PIN,
             enabled=config.UART_ENABLED,
         )
+        _boot_stage("uart_create_ok")
 
         time.sleep_ms(config.CAMERA_WARMUP_MS)
         gc.collect()
@@ -197,6 +235,7 @@ def run():
                 STREAM_TARGET_FPS,
             )
         )
+        _boot_stage("vision_loop_begin")
 
         while True:
             clock.tick()
